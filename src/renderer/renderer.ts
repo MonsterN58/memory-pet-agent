@@ -1,0 +1,752 @@
+import { DEFAULT_SETTINGS } from "../common/defaults";
+import type {
+  AgentSettings,
+  ChatResponse,
+  ControlPanelView,
+  MemoryRecord,
+  MemorySnapshot,
+  LocalSpeechModelStatus,
+  PublicSettingsState,
+  PublicModelState,
+  PetAction,
+  PetEmotion,
+  PetFocus,
+  PetLocomotion,
+  PersonalityDimension,
+  PersonalityProfile,
+  SettingsUpdate,
+} from "../common/types";
+import type { PetModelAdapter } from "./model-adapter";
+import { DefaultPetAdapter } from "./model-adapter";
+import { Live2DPetAdapter } from "./live2d-pet-adapter";
+import { VoiceService } from "./voice-service";
+
+function must<T extends Element>(selector: string): T {
+  const element = document.querySelector<T>(selector);
+  if (!element) throw new Error(`Missing UI element: ${selector}`);
+  return element;
+}
+
+const bridge = window.petAgent;
+const params = new URLSearchParams(location.search);
+const panelMode = params.get("mode") === "panel";
+document.body.classList.toggle("panel-mode", panelMode);
+must<HTMLElement>("#pet-app").hidden = panelMode;
+must<HTMLElement>("#panel-app").hidden = !panelMode;
+
+let settingsState: PublicSettingsState = {
+  settings: structuredClone(DEFAULT_SETTINGS),
+  hasApiKey: false,
+  hasTtsApiKey: false,
+  dataDirectory: "",
+};
+
+function input(selector: string): HTMLInputElement {
+  return must<HTMLInputElement>(selector);
+}
+
+function kindLabel(kind: MemoryRecord["kind"]): string {
+  return { dialogue: "对话", episode: "事件", fact: "事实", preference: "偏好", reflection: "反思" }[kind];
+}
+
+if (panelMode) void initializePanel((params.get("view") as ControlPanelView | null) ?? "settings");
+else void initializePet();
+
+async function initializePet(): Promise<void> {
+  const petApp = must<HTMLElement>("#pet-app");
+  const hitArea = must<HTMLElement>("#pet-hit-area");
+  const dialog = must<HTMLElement>("#pet-dialog");
+  const dialogueLog = must<HTMLElement>("#pet-dialogue-log");
+  const messageInput = must<HTMLInputElement>("#pet-message-input");
+  const sendButton = must<HTMLButtonElement>("#pet-send-button");
+  const micButton = must<HTMLButtonElement>("#pet-mic-button");
+  const toast = must<HTMLElement>("#pet-toast");
+  let model: PetModelAdapter = new DefaultPetAdapter();
+  const mount = must<HTMLElement>("#pet-mount");
+  model.mount(mount);
+  model.resize(mount.clientWidth, mount.clientHeight);
+  let busy = false;
+  let hideTimer: number | undefined;
+  let toastTimer: number | undefined;
+  let clickThrough = true;
+  let pointerDown = false;
+  let dragActive = false;
+  let dragPointerId: number | undefined;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let suppressClick = false;
+  let dragStartRequest: Promise<void> | undefined;
+  let currentEmotion: PetEmotion = "idle";
+  let currentLocomotion: PetLocomotion = "idle";
+  let currentFocus: PetFocus = { x: 0, y: 0 };
+  let modelLoadPending = false;
+  let modelLoadAnnounce = false;
+  let modelSwitchTask: Promise<void> | undefined;
+
+  function setClickThrough(ignore: boolean): void {
+    if (ignore === clickThrough) return;
+    clickThrough = ignore;
+    void bridge.setPetClickThrough(ignore);
+  }
+
+  function showDialog(
+    focusInput = false,
+    autoHideMs?: number,
+    presentation: "interactive" | "caption" = "interactive",
+  ): void {
+    if (pointerDown) return;
+    if (hideTimer) window.clearTimeout(hideTimer);
+    petApp.classList.add("dialog-visible");
+    const showComposer = presentation === "interactive" || busy || dialog.contains(document.activeElement);
+    petApp.classList.toggle("composer-visible", showComposer);
+    void bridge.setPetInteraction(true);
+    setClickThrough(false);
+    if (focusInput) window.setTimeout(() => messageInput.focus(), 30);
+    if (autoHideMs) hideTimer = window.setTimeout(() => {
+      if (hideDialog()) setClickThrough(true);
+    }, autoHideMs);
+  }
+
+  function hideDialog(): boolean {
+    if (dialog.contains(document.activeElement)) return false;
+    petApp.classList.remove("dialog-visible");
+    petApp.classList.remove("composer-visible");
+    void bridge.setPetInteraction(false);
+    return true;
+  }
+
+  function scheduleHide(): void {
+    if (pointerDown) return;
+    if (hideTimer) window.clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(() => {
+      if (hideDialog()) setClickThrough(true);
+    }, 850);
+  }
+
+  function showToast(text: string): void {
+    toast.textContent = text;
+    toast.hidden = false;
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      toast.hidden = true;
+    }, 3000);
+  }
+
+  const voice = new VoiceService(
+    () => settingsState.settings,
+    (text) => bridge.synthesizeSpeech(text),
+    showToast,
+    (audio) => bridge.recognizeLocalSpeech(audio),
+  );
+
+  function appendLine(role: "user" | "assistant", text: string): void {
+    const line = document.createElement("p");
+    line.className = role === "user" ? "user-line" : "assistant-line";
+    line.textContent = text;
+    dialogueLog.replaceChildren(line);
+    dialogueLog.scrollTop = dialogueLog.scrollHeight;
+  }
+
+  function setModelEmotion(state: PetEmotion): void {
+    currentEmotion = state;
+    model.setState(state);
+  }
+
+  function setModelLocomotion(state: PetLocomotion): void {
+    currentLocomotion = state;
+    model.setLocomotion(state);
+  }
+
+  async function switchModel(next: PetModelAdapter): Promise<void> {
+    const previous = model;
+    const staging = document.createElement("div");
+    staging.className = "model-staging";
+    mount.append(staging);
+    try {
+      await next.mount(staging);
+      next.resize(mount.clientWidth, mount.clientHeight);
+      next.setLocomotion(currentLocomotion);
+      next.setState(currentEmotion);
+      next.setFocus(currentFocus);
+      const nextRoot = staging.firstElementChild;
+      if (!nextRoot) throw new Error("模型没有生成可显示的画面");
+      mount.replaceChildren(nextRoot);
+      model = next;
+      try {
+        previous.destroy();
+      } catch (error) {
+        console.warn("Previous model cleanup failed", error instanceof Error ? error.stack : error);
+      }
+      console.info(`LIVE2D_MODEL_READY ${next.id}`);
+    } catch (error) {
+      next.destroy();
+      staging.remove();
+      throw error;
+    }
+  }
+
+  async function loadConfiguredModel(announce = false): Promise<void> {
+    modelLoadPending = true;
+    modelLoadAnnounce ||= announce;
+    if (!modelSwitchTask) {
+      modelSwitchTask = (async () => {
+        while (modelLoadPending) {
+          modelLoadPending = false;
+          const shouldAnnounce = modelLoadAnnounce;
+          modelLoadAnnounce = false;
+          try {
+            const assets = await bridge.getActiveModel();
+            const next: PetModelAdapter = new Live2DPetAdapter(assets);
+            if (next.id === model.id) continue;
+            await switchModel(next);
+            if (shouldAnnounce) showToast(`已切换 Live2D 模型：${assets.info.name}`);
+          } catch (error) {
+            console.error("Live2D model loading failed", error);
+            showToast(`Live2D 加载失败，已保留当前模型：${error instanceof Error ? error.message : "资源无效"}`);
+          }
+        }
+      })().finally(() => {
+        modelSwitchTask = undefined;
+      });
+    }
+    return modelSwitchTask;
+  }
+
+  function beginPointerDrag(event: PointerEvent): void {
+    if (event.button !== 0 || pointerDown) return;
+    pointerDown = true;
+    dragActive = false;
+    dragPointerId = event.pointerId;
+    dragStartX = event.clientX;
+    dragStartY = event.clientY;
+    suppressClick = false;
+    hitArea.classList.add("dragging");
+    hitArea.setPointerCapture(event.pointerId);
+    if (hideTimer) window.clearTimeout(hideTimer);
+    if (dialog.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+    petApp.classList.remove("dialog-visible");
+    petApp.classList.remove("composer-visible");
+    void bridge.setPetInteraction(false);
+    setClickThrough(false);
+  }
+
+  function updatePointerDrag(event: PointerEvent): void {
+    if (!pointerDown) return;
+    event.preventDefault();
+    if (dragActive || Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY) < 5) return;
+    dragActive = true;
+    suppressClick = true;
+    dragStartRequest = bridge.startPetDrag().catch((error: unknown) => {
+      showToast(error instanceof Error ? error.message : "暂时无法拖动桌宠");
+    });
+  }
+
+  function finishPointerDrag(event: PointerEvent): void {
+    if (!pointerDown) return;
+    pointerDown = false;
+    hitArea.classList.remove("dragging");
+    if (hitArea.hasPointerCapture(event.pointerId)) hitArea.releasePointerCapture(event.pointerId);
+    if (dragActive) {
+      const startRequest = dragStartRequest;
+      void (async () => {
+        if (startRequest) await startRequest;
+        await bridge.endPetDrag();
+      })().catch((error: unknown) => {
+        showToast(error instanceof Error ? error.message : "桌宠落地失败");
+      });
+    }
+    dragActive = false;
+    dragPointerId = undefined;
+    dragStartRequest = undefined;
+    void bridge.setPetInteraction(false);
+    scheduleHide();
+    if (suppressClick) window.setTimeout(() => {
+      suppressClick = false;
+    }, 0);
+  }
+
+  function applyPetSettings(state: PublicSettingsState): void {
+    const previousVoice = settingsState.settings.voice;
+    settingsState = state;
+    must<HTMLElement>("#pet-agent-name").textContent = state.settings.agentName;
+    micButton.disabled = !state.settings.voice.inputEnabled;
+    if (
+      !state.settings.voice.outputEnabled
+      || previousVoice.ttsMode !== state.settings.voice.ttsMode
+      || previousVoice.language !== state.settings.voice.language
+      || previousVoice.ttsBaseUrl !== state.settings.voice.ttsBaseUrl
+      || previousVoice.ttsModel !== state.settings.voice.ttsModel
+      || previousVoice.ttsVoice !== state.settings.voice.ttsVoice
+      || previousVoice.ttsSpeed !== state.settings.voice.ttsSpeed
+    ) voice.cancelSpeech();
+  }
+
+  function handleResponse(response: ChatResponse): void {
+    appendLine("assistant", response.text);
+    must<HTMLElement>("#pet-mode-badge").textContent = response.source === "provider" ? "模型在线" : "本地陪伴";
+    setModelEmotion(response.emotion);
+    void model.speak(response.text);
+    voice.speak(response.text);
+    showDialog(false, 12_000, "caption");
+    if (response.warning) showToast(response.warning);
+  }
+
+  async function sendMessage(raw?: string): Promise<void> {
+    const text = (raw ?? messageInput.value).trim();
+    if (!text || busy) return;
+    busy = true;
+    sendButton.disabled = true;
+    messageInput.disabled = true;
+    messageInput.value = "";
+    appendLine("user", text);
+    setModelEmotion("thinking");
+    try {
+      handleResponse(await bridge.chat(text));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "发送失败";
+      appendLine("assistant", `刚才没有顺利处理：${message}`);
+      showToast(message);
+      setModelEmotion("idle");
+    } finally {
+      busy = false;
+      sendButton.disabled = false;
+      messageInput.disabled = false;
+      messageInput.focus();
+    }
+  }
+
+  must<HTMLFormElement>("#pet-composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendMessage();
+  });
+  messageInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    messageInput.blur();
+    if (hideDialog()) setClickThrough(true);
+  });
+  micButton.addEventListener("click", () => {
+    voice.start(
+      (text) => void sendMessage(text),
+      (text) => {
+        messageInput.value = text;
+      },
+      (listening, error) => {
+        micButton.classList.toggle("listening", listening);
+        setModelEmotion(listening ? "listening" : "idle");
+        if (error) showToast(error);
+      },
+    );
+  });
+
+  document.addEventListener("pointermove", (event) => {
+    if (pointerDown) {
+      updatePointerDrag(event);
+      setClickThrough(false);
+      return;
+    }
+    const target = event.target as Element | null;
+    const interactive = Boolean(target?.closest("[data-interactive]"));
+    setClickThrough(!interactive);
+    if (interactive) showDialog();
+    else scheduleHide();
+  });
+  petApp.addEventListener("pointerleave", scheduleHide);
+  dialog.addEventListener("pointerenter", () => showDialog());
+  hitArea.addEventListener("pointerenter", () => showDialog());
+  hitArea.addEventListener("pointerdown", beginPointerDrag);
+  hitArea.addEventListener("pointermove", updatePointerDrag);
+  hitArea.addEventListener("pointerup", finishPointerDrag);
+  hitArea.addEventListener("pointercancel", finishPointerDrag);
+  hitArea.addEventListener("click", () => {
+    if (suppressClick) return;
+    showDialog(true);
+  });
+  dialog.addEventListener("focusin", () => showDialog());
+  dialog.addEventListener("focusout", () => window.setTimeout(scheduleHide, 0));
+  window.addEventListener("blur", () => {
+    if (pointerDown) return;
+    if (hideTimer) window.clearTimeout(hideTimer);
+    petApp.classList.remove("dialog-visible");
+    petApp.classList.remove("composer-visible");
+    void bridge.setPetInteraction(false);
+    setClickThrough(true);
+  });
+  window.addEventListener("resize", () => model.resize(mount.clientWidth, mount.clientHeight));
+
+  bridge.onLocomotion(setModelLocomotion);
+  bridge.onPetFocus((focus) => {
+    currentFocus = focus;
+    model.setFocus(focus);
+  });
+  bridge.onPetAction((action) => {
+    if (!model.playAction(action)) showToast(`当前模型暂时无法播放“${action}”动作。`);
+  });
+  bridge.onModelChanged(() => void loadConfiguredModel(true));
+  bridge.onUiCommand((command) => {
+    if (command === "focus-chat") showDialog(true);
+  });
+  bridge.onProactiveMessage(handleResponse);
+  bridge.onSettingsChanged(applyPetSettings);
+
+  try {
+    const state = await bridge.bootstrap();
+    applyPetSettings(state.settings);
+    must<HTMLElement>("#pet-mode-badge").textContent = state.providerMode === "provider" ? "模型在线" : "本地陪伴";
+    dialogueLog.replaceChildren();
+    appendLine("assistant", `嗨，${state.settings.settings.userName}。鼠标靠近我就能聊天，右键可以打开全部设置。`);
+    if (!voice.supported()) micButton.title = "当前环境无法使用所选语音识别模式";
+    if (state.settings.settings.voice.recognitionMode === "local") {
+      const localStatus = await bridge.getLocalSpeechStatus();
+      micButton.title = localStatus.message;
+      if (localStatus.state !== "ready") micButton.disabled = true;
+    }
+    await loadConfiguredModel();
+    setClickThrough(true);
+  } catch (error) {
+    appendLine("assistant", `初始化失败：${error instanceof Error ? error.message : "未知错误"}`);
+    showDialog(false, 10_000, "caption");
+  }
+}
+
+async function initializePanel(initialView: ControlPanelView): Promise<void> {
+  const panelToast = must<HTMLElement>("#panel-toast");
+  let toastTimer: number | undefined;
+
+  function showToast(text: string, duration = 3200): void {
+    panelToast.textContent = text;
+    panelToast.hidden = false;
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      panelToast.hidden = true;
+    }, duration);
+  }
+
+  function renderCounts(snapshot: MemorySnapshot): void {
+    must<HTMLElement>("#l1-count").textContent = String(snapshot.l1.length);
+    must<HTMLElement>("#l2-count").textContent = String(snapshot.l2.length);
+    must<HTMLElement>("#l3-count").textContent = String(snapshot.l3.length);
+  }
+
+  function renderPersonality(profile: PersonalityProfile): void {
+    const stageLabels: Record<PersonalityProfile["stage"], string> = {
+      blank: "空白期",
+      forming: "萌芽期",
+      developing: "成长期",
+      established: "稳定期",
+    };
+    const traitLabels: Record<PersonalityDimension, string> = {
+      warmth: "温暖度",
+      curiosity: "好奇度",
+      playfulness: "俏皮度",
+      directness: "直接度",
+      initiative: "主动度",
+      expressiveness: "表达度",
+    };
+    must<HTMLElement>("#personality-stage").textContent = stageLabels[profile.stage];
+    must<HTMLElement>("#personality-interactions").textContent = `${profile.interactionCount} 次互动`;
+    must<HTMLElement>("#personality-summary").textContent = profile.summary;
+    const list = must<HTMLElement>("#personality-traits");
+    list.replaceChildren();
+    if (!profile.traits.length) {
+      const empty = document.createElement("div");
+      empty.className = "personality-empty";
+      empty.textContent = "目前没有已观察到的特质证据。";
+      list.append(empty);
+      return;
+    }
+    for (const trait of profile.traits) {
+      const row = document.createElement("div");
+      row.className = "personality-trait";
+      const header = document.createElement("div");
+      const label = document.createElement("strong");
+      label.textContent = traitLabels[trait.dimension];
+      const value = document.createElement("span");
+      value.textContent = `${Math.round(trait.score * 100)} · 置信 ${Math.round(trait.confidence * 100)}%`;
+      header.append(label, value);
+      const track = document.createElement("div");
+      track.className = "personality-track";
+      const fill = document.createElement("span");
+      fill.style.width = `${Math.round(trait.score * 100)}%`;
+      track.append(fill);
+      const evidence = document.createElement("small");
+      evidence.textContent = `证据 ${trait.evidenceCount} 次 · 最近：${trait.lastEvidence || "等待更多互动"}`;
+      row.append(header, track, evidence);
+      list.append(row);
+    }
+  }
+
+  function renderModelState(state: PublicModelState): void {
+    const name = must<HTMLElement>("#model-state-name");
+    const details = must<HTMLElement>("#model-state-details");
+    const select = must<HTMLSelectElement>("#model-bundled-select");
+    name.textContent = state.model.name;
+    details.textContent = `Cubism model3 v${state.model.settingsVersion} · ${state.model.textureCount} 张贴图 · ${state.model.motionCount} 个 motion · ${state.model.expressionCount} 个表情${state.model.lipSyncParameters.length ? " · 支持口型" : ""}${state.kind === "imported" ? " · 用户导入" : " · 官方样例"}`;
+    select.replaceChildren(...state.bundledModels.map((model) => new Option(model.name, model.id)));
+    select.value = state.kind === "bundled" ? state.model.id : state.bundledModels[0]?.id ?? "";
+  }
+
+  function renderMemory(records: MemoryRecord[]): void {
+    const list = must<HTMLElement>("#memory-list");
+    list.replaceChildren();
+    if (records.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = "还没有可展示的记忆。和桌宠聊一会儿，或明确保存一件事吧。";
+      list.append(empty);
+      return;
+    }
+    for (const record of records) {
+      const card = document.createElement("article");
+      card.className = "memory-card";
+      const header = document.createElement("header");
+      const tier = document.createElement("b");
+      tier.textContent = `${record.tier} · ${kindLabel(record.kind)}`;
+      const time = document.createElement("time");
+      time.textContent = new Date(record.updatedAt).toLocaleDateString("zh-CN");
+      header.append(tier, time);
+      const content = document.createElement("p");
+      content.textContent = record.summary || record.content;
+      const footer = document.createElement("footer");
+      footer.textContent = `重要度 ${Math.round(record.importance * 100)}% · 访问 ${record.accessCount} 次${record.tags.length ? ` · ${record.tags.slice(0, 3).join(" / ")}` : ""}`;
+      card.append(header, content, footer);
+      list.append(card);
+    }
+  }
+
+  async function refreshMemory(): Promise<void> {
+    const snapshot = await bridge.getMemory();
+    renderCounts(snapshot);
+    renderMemory([...snapshot.l3, ...snapshot.l2, ...snapshot.l1].reverse());
+  }
+
+  function openView(view: ControlPanelView): void {
+    const memory = view === "memory";
+    must<HTMLElement>("#memory-view").hidden = !memory;
+    must<HTMLElement>("#settings-view").hidden = memory;
+    must<HTMLElement>("#panel-title").textContent = memory ? "三级记忆" : "桌宠设置";
+    must<HTMLButtonElement>("#memory-tab").classList.toggle("active", memory);
+    must<HTMLButtonElement>("#settings-tab").classList.toggle("active", !memory);
+    if (memory) void refreshMemory();
+  }
+
+  function populateSettings(state: PublicSettingsState): void {
+    settingsState = state;
+    const value = state.settings;
+    input("#setting-agent-name").value = value.agentName;
+    input("#setting-user-name").value = value.userName;
+    input("#setting-personality-learning").checked = value.personality.learningEnabled;
+    input("#setting-personality-rate").value = String(value.personality.adaptationRate);
+    input("#setting-personality-evidence").value = String(value.personality.minimumEvidence);
+    input("#setting-provider-enabled").checked = value.provider.enabled;
+    input("#setting-base-url").value = value.provider.baseUrl;
+    input("#setting-model").value = value.provider.model;
+    input("#setting-api-key").value = "";
+    input("#setting-clear-key").checked = false;
+    must<HTMLElement>("#key-state").textContent = state.hasApiKey ? "已安全保存" : "未设置";
+    input("#setting-heartbeat-enabled").checked = value.heartbeat.enabled;
+    input("#setting-heartbeat-interval").value = String(value.heartbeat.intervalMinutes);
+    input("#setting-l1-max").value = String(value.heartbeat.l1MaxItems);
+    input("#setting-l1-age").value = String(value.heartbeat.l1MaxAgeMinutes);
+    input("#setting-consolidate-after").value = String(value.heartbeat.consolidateAfterItems);
+    input("#setting-proactive-enabled").checked = value.heartbeat.proactiveEnabled;
+    input("#setting-idle-minutes").value = String(value.heartbeat.idleMinutesBeforeChat);
+    input("#setting-cooldown").value = String(value.heartbeat.proactiveCooldownMinutes);
+    input("#setting-daily-limit").value = String(value.heartbeat.proactiveDailyLimit);
+    input("#setting-quiet-hours").value = `${value.heartbeat.quietHoursStart}-${value.heartbeat.quietHoursEnd}`;
+    input("#setting-voice-input").checked = value.voice.inputEnabled;
+    input("#setting-voice-output").checked = value.voice.outputEnabled;
+    input("#setting-language").value = value.voice.language;
+    must<HTMLSelectElement>("#setting-recognition-mode").value = value.voice.recognitionMode;
+    must<HTMLSelectElement>("#setting-tts-mode").value = value.voice.ttsMode;
+    input("#setting-tts-base-url").value = value.voice.ttsBaseUrl;
+    input("#setting-tts-model").value = value.voice.ttsModel;
+    input("#setting-tts-voice").value = value.voice.ttsVoice;
+    input("#setting-tts-speed").value = String(value.voice.ttsSpeed);
+    input("#setting-tts-api-key").value = "";
+    input("#setting-clear-tts-key").checked = false;
+    must<HTMLElement>("#tts-key-state").textContent = state.hasTtsApiKey ? "已安全保存" : "未设置";
+    input("#setting-roaming-enabled").checked = value.window.roamingEnabled;
+    input("#setting-roaming-speed").value = String(value.window.roamingSpeed);
+    input("#setting-always-on-top").checked = value.window.alwaysOnTop;
+  }
+
+  function renderLocalSpeechStatus(status: LocalSpeechModelStatus): void {
+    const element = must<HTMLElement>("#local-asr-state");
+    element.dataset.state = status.state;
+    element.textContent = status.message;
+    element.title = status.directory;
+  }
+
+  function numberFrom(selector: string, fallback: number): number {
+    const value = Number(input(selector).value);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function collectSettings(): SettingsUpdate {
+    const current = settingsState.settings;
+    const quietMatch = input("#setting-quiet-hours").value.match(/^\s*(\d{1,2})\s*[-~至]\s*(\d{1,2})\s*$/);
+    const apiKey = input("#setting-api-key").value.trim();
+    const ttsApiKey = input("#setting-tts-api-key").value.trim();
+    return {
+      agentName: input("#setting-agent-name").value,
+      userName: input("#setting-user-name").value,
+      personality: {
+        learningEnabled: input("#setting-personality-learning").checked,
+        adaptationRate: numberFrom("#setting-personality-rate", current.personality.adaptationRate),
+        minimumEvidence: numberFrom("#setting-personality-evidence", current.personality.minimumEvidence),
+      },
+      provider: {
+        enabled: input("#setting-provider-enabled").checked,
+        baseUrl: input("#setting-base-url").value,
+        model: input("#setting-model").value,
+        temperature: current.provider.temperature,
+      },
+      heartbeat: {
+        enabled: input("#setting-heartbeat-enabled").checked,
+        intervalMinutes: numberFrom("#setting-heartbeat-interval", current.heartbeat.intervalMinutes),
+        l1MaxItems: numberFrom("#setting-l1-max", current.heartbeat.l1MaxItems),
+        l1MaxAgeMinutes: numberFrom("#setting-l1-age", current.heartbeat.l1MaxAgeMinutes),
+        consolidateAfterItems: numberFrom("#setting-consolidate-after", current.heartbeat.consolidateAfterItems),
+        proactiveEnabled: input("#setting-proactive-enabled").checked,
+        idleMinutesBeforeChat: numberFrom("#setting-idle-minutes", current.heartbeat.idleMinutesBeforeChat),
+        proactiveCooldownMinutes: numberFrom("#setting-cooldown", current.heartbeat.proactiveCooldownMinutes),
+        proactiveDailyLimit: numberFrom("#setting-daily-limit", current.heartbeat.proactiveDailyLimit),
+        quietHoursStart: quietMatch ? Number(quietMatch[1]) : current.heartbeat.quietHoursStart,
+        quietHoursEnd: quietMatch ? Number(quietMatch[2]) : current.heartbeat.quietHoursEnd,
+      },
+      voice: {
+        inputEnabled: input("#setting-voice-input").checked,
+        outputEnabled: input("#setting-voice-output").checked,
+        language: input("#setting-language").value,
+        recognitionMode: must<HTMLSelectElement>("#setting-recognition-mode").value as AgentSettings["voice"]["recognitionMode"],
+        ttsMode: must<HTMLSelectElement>("#setting-tts-mode").value as AgentSettings["voice"]["ttsMode"],
+        ttsBaseUrl: input("#setting-tts-base-url").value,
+        ttsModel: input("#setting-tts-model").value,
+        ttsVoice: input("#setting-tts-voice").value,
+        ttsSpeed: numberFrom("#setting-tts-speed", current.voice.ttsSpeed),
+      },
+      window: {
+        alwaysOnTop: input("#setting-always-on-top").checked,
+        roamingEnabled: input("#setting-roaming-enabled").checked,
+        roamingSpeed: numberFrom("#setting-roaming-speed", current.window.roamingSpeed),
+      },
+      apiKey: apiKey || undefined,
+      clearApiKey: input("#setting-clear-key").checked,
+      ttsApiKey: ttsApiKey || undefined,
+      clearTtsApiKey: input("#setting-clear-tts-key").checked,
+    };
+  }
+
+  document.querySelectorAll<HTMLButtonElement>(".panel-tabs button").forEach((button) => {
+    button.addEventListener("click", () => openView(button.dataset.view as ControlPanelView));
+  });
+  must<HTMLButtonElement>("#panel-close-button").addEventListener("click", () => void bridge.close());
+  must<HTMLButtonElement>("#open-data-button").addEventListener("click", () => void bridge.showDataDirectory());
+  must<HTMLButtonElement>("#open-data-button-memory").addEventListener("click", () => void bridge.showDataDirectory());
+  must<HTMLButtonElement>("#personality-reset-button").addEventListener("click", async () => {
+    if (!window.confirm("确定清空已经形成的人格证据吗？三级记忆不会被删除。")) return;
+    try {
+      renderPersonality(await bridge.resetPersonality());
+      showToast("人格状态已清空，将从之后的对话重新成长");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "人格重置失败");
+    }
+  });
+  must<HTMLButtonElement>("#model-import-button").addEventListener("click", async () => {
+    const button = must<HTMLButtonElement>("#model-import-button");
+    button.disabled = true;
+    try {
+      const result = await bridge.importLive2DModel();
+      renderModelState(result.state);
+      if (result.message) showToast(result.message, 5000);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "模型导入失败", 7000);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  must<HTMLButtonElement>("#model-apply-button").addEventListener("click", async () => {
+    try {
+      const selected = must<HTMLSelectElement>("#model-bundled-select").value;
+      renderModelState(await bridge.selectBundledModel(selected));
+      showToast("已切换内置 Live2D 模型");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "模型切换失败");
+    }
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-pet-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await bridge.playPetAction(button.dataset.petAction as PetAction);
+        showToast(`已播放动作：${button.textContent?.trim() ?? ""}`);
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "动作播放失败");
+      }
+    });
+  });
+  must<HTMLButtonElement>("#heartbeat-button").addEventListener("click", async () => {
+    try {
+      const result = await bridge.runHeartbeat();
+      renderCounts(result.snapshot);
+      renderMemory([...result.snapshot.l3, ...result.snapshot.l2, ...result.snapshot.l1].reverse());
+      renderPersonality(result.personality);
+      showToast(`心跳完成：L2 +${result.event.movedToL2}，L3 +${result.event.consolidatedToL3}，人格证据 +${result.event.personalityUpdates ?? 0}`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "心跳执行失败");
+    }
+  });
+  must<HTMLFormElement>("#remember-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const field = input("#remember-input");
+    const text = field.value.trim();
+    if (!text) return;
+    try {
+      const snapshot = await bridge.remember(text);
+      field.value = "";
+      renderCounts(snapshot);
+      renderMemory([...snapshot.l3, ...snapshot.l2, ...snapshot.l1].reverse());
+      showToast("已放入 L2 海马体待整理区");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "保存失败");
+    }
+  });
+  must<HTMLFormElement>("#memory-search-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const query = input("#memory-search-input").value.trim();
+    if (!query) return refreshMemory();
+    try {
+      renderMemory(await bridge.searchMemory(query));
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "搜索失败");
+    }
+  });
+  must<HTMLFormElement>("#settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = must<HTMLButtonElement>("#settings-form button[type=submit]");
+    submit.disabled = true;
+    try {
+      populateSettings(await bridge.saveSettings(collectSettings()));
+      showToast("设置已保存，人格成长、TTS、漫游和心跳策略已更新");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "设置保存失败", 5000);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  bridge.onPanelView(openView);
+  bridge.onSettingsChanged(populateSettings);
+  bridge.onModelChanged(renderModelState);
+  bridge.onPersonalityChanged(renderPersonality);
+  try {
+    const state = await bridge.bootstrap();
+    populateSettings(state.settings);
+    renderLocalSpeechStatus(await bridge.getLocalSpeechStatus());
+    renderPersonality(state.personality);
+    renderModelState(await bridge.getModelState());
+    renderCounts(state.memory);
+    openView(initialView);
+  } catch (error) {
+    showToast(`初始化失败：${error instanceof Error ? error.message : "未知错误"}`, 8000);
+  }
+}

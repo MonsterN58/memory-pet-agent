@@ -1,0 +1,46 @@
+import type { AgentSettings } from "./types";
+
+export const DEFAULT_SETTINGS: AgentSettings = {
+  agentName: "小忆",
+  userName: "朋友",
+  personality: {
+    learningEnabled: true,
+    adaptationRate: 0.18,
+    minimumEvidence: 2,
+  },
+  provider: {
+    enabled: false,
+    baseUrl: "https://api.openai.com/v1",
+    model: "",
+    temperature: 0.7,
+  },
+  heartbeat: {
+    enabled: true,
+    intervalMinutes: 10,
+    l1MaxItems: 16,
+    l1MaxAgeMinutes: 30,
+    consolidateAfterItems: 4,
+    proactiveEnabled: true,
+    idleMinutesBeforeChat: 30,
+    proactiveCooldownMinutes: 120,
+    proactiveDailyLimit: 4,
+    quietHoursStart: 23,
+    quietHoursEnd: 8,
+  },
+  voice: {
+    inputEnabled: true,
+    outputEnabled: true,
+    language: "zh-CN",
+    recognitionMode: "local",
+    ttsMode: "local",
+    ttsBaseUrl: "https://api.openai.com/v1",
+    ttsModel: "tts-1",
+    ttsVoice: "alloy",
+    ttsSpeed: 1,
+  },
+  window: {
+    alwaysOnTop: true,
+    roamingEnabled: true,
+    roamingSpeed: 1.25,
+  },
+};

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src data: blob:; worker-src blob:; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>记忆桌宠</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%237969e8'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="pet-app" class="pet-app">
+      <section id="pet-dialog" class="pet-dialog" data-interactive aria-label="桌宠字幕与输入栏">
+        <div class="pet-caption-rail">
+          <div class="pet-caption-source">
+            <span class="presence-dot" aria-hidden="true"></span>
+            <strong id="pet-agent-name">小忆</strong>
+            <span id="pet-mode-badge">本地陪伴</span>
+          </div>
+          <div id="pet-dialogue-log" class="pet-dialogue-log" aria-live="polite">
+            <p class="assistant-line">把鼠标移到我身上，就可以和我说话啦。</p>
+          </div>
+        </div>
+        <form id="pet-composer" class="pet-composer">
+          <span class="pet-command-prompt" aria-hidden="true">›</span>
+          <input id="pet-message-input" maxlength="4000" autocomplete="off" aria-label="给桌宠发送消息" placeholder="输入一句话…" />
+          <button id="pet-mic-button" type="button" aria-label="语音输入" title="语音输入">◎</button>
+          <button id="pet-send-button" type="submit" aria-label="发送">↗</button>
+        </form>
+      </section>
+
+      <section id="pet-hit-area" class="pet-hit-area" data-interactive tabindex="0" aria-label="桌宠小忆">
+        <div id="pet-mount" class="pet-mount"></div>
+      </section>
+      <div id="pet-toast" class="pet-toast" role="status" hidden></div>
+    </main>
+
+    <main id="panel-app" class="panel-app" hidden>
+      <header class="panel-header">
+        <div>
+          <small>MEMORY PET CONTROL</small>
+          <h1 id="panel-title">桌宠设置</h1>
+        </div>
+        <button id="panel-close-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <nav class="panel-tabs" aria-label="控制面板">
+        <button id="memory-tab" type="button" data-view="memory">三级记忆</button>
+        <button id="settings-tab" type="button" data-view="settings">设置</button>
+      </nav>
+
+      <section id="memory-view" class="panel-view">
+        <div class="memory-overview">
+          <div><b>L1</b><span>瞬时</span><strong id="l1-count">0</strong></div>
+          <i>→</i>
+          <div><b>L2</b><span>待整理</span><strong id="l2-count">0</strong></div>
+          <i>→</i>
+          <div><b>L3</b><span>长期</span><strong id="l3-count">0</strong></div>
+        </div>
+        <div class="panel-action-row">
+          <button id="heartbeat-button" type="button" class="secondary-button">立即心跳整理</button>
+          <button id="open-data-button-memory" type="button" class="secondary-button">打开数据目录</button>
+        </div>
+        <form id="remember-form" class="inline-form">
+          <input id="remember-input" maxlength="2000" placeholder="明确保存一件需要记住的事" />
+          <button type="submit">记住</button>
+        </form>
+        <form id="memory-search-form" class="inline-form search-form">
+          <input id="memory-search-input" maxlength="500" placeholder="搜索记忆…" />
+          <button type="submit">搜索</button>
+        </form>
+        <div id="memory-list" class="memory-list"></div>
+      </section>
+
+      <section id="settings-view" class="panel-view" hidden>
+        <form id="settings-form">
+          <fieldset>
+            <legend>身份与人格成长</legend>
+            <div class="two-columns">
+              <label>桌宠名字<input id="setting-agent-name" maxlength="30" /></label>
+              <label>怎么称呼你<input id="setting-user-name" maxlength="30" /></label>
+            </div>
+            <label class="switch-row"><span>根据长期互动学习人格</span><input id="setting-personality-learning" type="checkbox" /></label>
+            <div class="two-columns">
+              <label>成长速度<input id="setting-personality-rate" type="number" min="0.05" max="0.5" step="0.01" /></label>
+              <label>形成特质所需证据<input id="setting-personality-evidence" type="number" min="1" max="12" step="1" /></label>
+            </div>
+            <div class="personality-card">
+              <header><strong id="personality-stage">空白期</strong><span id="personality-interactions">0 次互动</span></header>
+              <p id="personality-summary">尚未形成稳定人格，正在从真实互动中认识自己的表达方式。</p>
+              <div id="personality-traits" class="personality-traits"></div>
+              <button id="personality-reset-button" type="button" class="secondary-button">清空人格，重新成长</button>
+            </div>
+            <p class="model-import-note">人格不是手写提示词。系统记录对交流方式的重复证据、相反反馈和置信度；未达到证据门槛的倾向不会成为稳定特质。</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>聊天 LLM（OpenAI 兼容）</legend>
+            <label class="switch-row"><span>启用模型服务</span><input id="setting-provider-enabled" type="checkbox" /></label>
+            <label>聊天 Base URL<input id="setting-base-url" type="url" placeholder="https://api.openai.com/v1" /></label>
+            <label>聊天模型<input id="setting-model" placeholder="服务支持的聊天模型名称" /></label>
+            <label>聊天 API Key <span id="key-state" class="field-note"></span><input id="setting-api-key" type="password" autocomplete="off" placeholder="留空表示不修改" /></label>
+            <label class="switch-row danger"><span>清除已保存的聊天 Key</span><input id="setting-clear-key" type="checkbox" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>心跳与记忆</legend>
+            <label class="switch-row"><span>启用心跳</span><input id="setting-heartbeat-enabled" type="checkbox" /></label>
+            <div class="two-columns">
+              <label>间隔（分钟）<input id="setting-heartbeat-interval" type="number" min="1" max="1440" /></label>
+              <label>L1 容量<input id="setting-l1-max" type="number" min="4" max="100" /></label>
+              <label>L1 停留（分钟）<input id="setting-l1-age" type="number" min="1" max="10080" /></label>
+              <label>L2 整理阈值<input id="setting-consolidate-after" type="number" min="1" max="50" /></label>
+            </div>
+            <label class="switch-row"><span>允许主动聊天</span><input id="setting-proactive-enabled" type="checkbox" /></label>
+            <div class="two-columns">
+              <label>空闲触发（分钟）<input id="setting-idle-minutes" type="number" min="1" /></label>
+              <label>冷却时间（分钟）<input id="setting-cooldown" type="number" min="5" /></label>
+              <label>每日上限<input id="setting-daily-limit" type="number" min="0" max="48" /></label>
+              <label>安静时段<input id="setting-quiet-hours" placeholder="23-8" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Live2D 模型与动作</legend>
+            <div class="model-state-card">
+              <span>当前模型</span>
+              <strong id="model-state-name">Hiyori（官方样例）</strong>
+              <small id="model-state-details">正在读取模型状态…</small>
+            </div>
+            <label>内置模型<select id="model-bundled-select"></select></label>
+            <div class="model-button-row">
+              <button id="model-import-button" type="button" class="primary-button">导入 Live2D 文件夹</button>
+              <button id="model-apply-button" type="button" class="secondary-button">切换内置模型</button>
+            </div>
+            <p class="model-import-note">支持 Cubism 3/4/5 的 .model3.json + .moc3 模型，包含 motions、expressions、physics 和最多 8 张贴图，总计不超过 64MB。导入后资源会复制到本地数据目录。</p>
+            <span class="field-group-label">动作预览</span>
+            <div class="pet-action-grid">
+              <button type="button" data-pet-action="wave">👋 挥手</button>
+              <button type="button" data-pet-action="jump">↥ 跳跃</button>
+              <button type="button" data-pet-action="dance">♫ 跳舞</button>
+              <button type="button" data-pet-action="sit">⌄ 坐下</button>
+              <button type="button" data-pet-action="sleep">☾ 睡觉</button>
+              <button type="button" data-pet-action="surprised">! 惊讶</button>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>语音输入与朗读</legend>
+            <label class="switch-row"><span>语音输入</span><input id="setting-voice-input" type="checkbox" /></label>
+            <label>识别语言<input id="setting-language" placeholder="zh-CN" /></label>
+            <label>识别模式
+              <select id="setting-recognition-mode">
+                <option value="local">项目内离线模型（推荐）</option>
+                <option value="browser">Chromium 兼容模式（可能联网）</option>
+              </select>
+            </label>
+            <p class="model-import-note">离线模式使用当前项目目录中的 sherpa-onnx 中文模型，不上传录音；说完后保持约 1.2 秒安静会自动结束，也可再次点击麦克风手动结束。<span id="local-asr-state" class="field-note"></span></p>
+            <label class="switch-row"><span>自动朗读回复</span><input id="setting-voice-output" type="checkbox" /></label>
+            <label>朗读模式
+              <select id="setting-tts-mode">
+                <option value="local">本机语音（默认，不调用 API）</option>
+                <option value="cloud">云端 TTS（失败回退本机）</option>
+              </select>
+            </label>
+            <label>云端 TTS Base URL<input id="setting-tts-base-url" type="url" placeholder="https://api.openai.com/v1" /></label>
+            <label>云端 TTS 模型<input id="setting-tts-model" maxlength="120" placeholder="tts-1" /></label>
+            <label>云端 TTS 音色<input id="setting-tts-voice" maxlength="120" list="tts-voice-suggestions" placeholder="alloy" /></label>
+            <datalist id="tts-voice-suggestions">
+              <option value="alloy"></option><option value="ash"></option><option value="ballad"></option>
+              <option value="coral"></option><option value="echo"></option><option value="fable"></option>
+              <option value="nova"></option><option value="onyx"></option><option value="sage"></option>
+              <option value="shimmer"></option><option value="verse"></option>
+            </datalist>
+            <div class="two-columns">
+              <label>朗读语速<input id="setting-tts-speed" type="number" min="0.25" max="4" step="0.05" /></label>
+            </div>
+            <label>云端 TTS API Key <span id="tts-key-state" class="field-note"></span><input id="setting-tts-api-key" type="password" autocomplete="off" placeholder="留空表示不修改" /></label>
+            <label class="switch-row danger"><span>清除已保存的云端 TTS Key</span><input id="setting-clear-tts-key" type="checkbox" /></label>
+            <p class="model-import-note">本机模式使用系统已安装语音且不发送回复文本。选择云端模式后才会调用独立的 <code>/audio/speech</code>；API 不可用、配置缺失或音频播放失败时会自动回退本机语音。</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>移动与窗口</legend>
+            <label>漫游速度<input id="setting-roaming-speed" type="number" min="0.4" max="4" step="0.1" /></label>
+            <label class="switch-row"><span>允许桌面自由移动</span><input id="setting-roaming-enabled" type="checkbox" /></label>
+            <label class="switch-row"><span>始终置顶</span><input id="setting-always-on-top" type="checkbox" /></label>
+          </fieldset>
+
+          <p class="privacy-note">记忆、人格证据、设置和两组加密凭据保存在本机。项目内离线识别和本机朗读不上传语音或回复；Chromium 兼容识别可能使用联网服务。启用聊天模型时会向聊天端点发送当前输入、少量相关记忆和已形成的人格状态；只有选择云端 TTS 时才会把助手回复发送到独立 TTS 端点。</p>
+          <div class="settings-actions">
+            <button id="open-data-button" type="button" class="secondary-button">打开数据目录</button>
+            <button type="submit" class="primary-button">保存设置</button>
+          </div>
+        </form>
+      </section>
+      <div id="panel-toast" class="panel-toast" role="status" hidden></div>
+    </main>
+
+    <script src="./live2d-runtime/live2dcubismcore.min.js"></script>
+    <script type="module" src="./browser-mock.ts"></script>
+    <script type="module" src="./renderer.ts"></script>
+  </body>
+</html>

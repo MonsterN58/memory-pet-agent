@@ -1,0 +1,22 @@
+node_modules/
+dist/
+release/
+.cache/
+resources/voice/**/*.onnx
+resources/voice/**/test_wavs/
+resources/voice/**/tokens.txt
+resources/voice/*/*.download
+*.log
+.env
+.DS_Store
+Thumbs.db
+.playwright-cli/
+output/
+tmp/
+tools/
+# 已停用的本地 Spine 试验模型，来源授权未纳入当前公开仓库。
+A1/
+ayan/
+Pet1001/
+vite-ui.log
+vite-ui-error.log

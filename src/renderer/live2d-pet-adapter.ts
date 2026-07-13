@@ -1,0 +1,419 @@
+import "pixi.js/unsafe-eval";
+import { Application, extensions, WebGLRenderer } from "pixi.js";
+import {
+  configureCubismSDK,
+  CubismModelSettings,
+  Live2DModel,
+  Live2DPlugin,
+  MotionPriority,
+  type CubismInternalModel,
+} from "untitled-pixi-live2d-engine/cubism";
+import type { Live2DModelAssetPackage, PetAction, PetEmotion, PetFocus, PetLocomotion } from "../common/types";
+import type { PetModelAdapter } from "./model-adapter";
+
+let runtimeConfigured = false;
+
+function configureRuntime(): void {
+  if (runtimeConfigured) return;
+  if (!("Live2DCubismCore" in window)) throw new Error("Live2D Cubism Core 未加载");
+  extensions.add(Live2DPlugin);
+  configureCubismSDK({ memorySizeMB: 32 });
+  runtimeConfigured = true;
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const binary = window.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function createModelSettings(assets: Live2DModelAssetPackage): CubismModelSettings {
+  const settingsAsset = assets.files.find((asset) => asset.path.toLowerCase().endsWith(".model3.json"));
+  if (!settingsAsset) throw new Error("Live2D 资源包缺少 model3.json");
+  const json = JSON.parse(new TextDecoder().decode(decodeBase64(settingsAsset.base64))) as Record<string, unknown>;
+  json.url = settingsAsset.path;
+  const settings = new CubismModelSettings(json as ConstructorParameters<typeof CubismModelSettings>[0]);
+  const files = new Map(assets.files.map((asset) => [asset.path, asset]));
+  settings.resolveURL = (path: string) => {
+    const base = new URL(settingsAsset.path, "https://memory-pet.invalid/");
+    const resolved = decodeURIComponent(new URL(path, base).pathname.replace(/^\/+/, ""));
+    const asset = files.get(resolved);
+    if (!asset) throw new Error(`Live2D 资源包缺少 ${resolved}`);
+    return `data:${asset.mimeType};base64,${asset.base64}`;
+  };
+  return settings;
+}
+
+const ACTION_INDEX: Record<PetAction, number> = {
+  wave: 0,
+  jump: 1,
+  dance: 2,
+  sit: 3,
+  sleep: 4,
+  surprised: 5,
+};
+
+const ACTION_DURATION: Record<PetAction, number> = {
+  wave: 1600,
+  jump: 1200,
+  dance: 2400,
+  sit: 2000,
+  sleep: 3500,
+  surprised: 900,
+};
+
+interface ActionMotion {
+  groups: string[];
+  index: number;
+}
+
+const BUNDLED_ACTION_MOTIONS: Record<string, Record<PetAction, ActionMotion>> = {
+  hiyori: {
+    wave: { groups: ["Idle"], index: 4 },
+    jump: { groups: ["Idle"], index: 7 },
+    dance: { groups: ["Idle"], index: 5 },
+    sit: { groups: ["Idle"], index: 1 },
+    sleep: { groups: ["Idle"], index: 3 },
+    surprised: { groups: ["Idle"], index: 6 },
+  },
+  mao: {
+    wave: { groups: ["TapBody"], index: 0 },
+    jump: { groups: ["TapBody"], index: 3 },
+    dance: { groups: ["TapBody"], index: 4 },
+    sit: { groups: ["TapBody"], index: 1 },
+    sleep: { groups: ["TapBody"], index: 2 },
+    surprised: { groups: ["TapBody"], index: 5 },
+  },
+  wanko: {
+    wave: { groups: ["TapBody"], index: 1 },
+    jump: { groups: ["TapBody"], index: 3 },
+    dance: { groups: ["Shake", "TapBody"], index: 0 },
+    sit: { groups: ["TapBody"], index: 0 },
+    sleep: { groups: ["Idle"], index: 3 },
+    surprised: { groups: ["TapBody"], index: 5 },
+  },
+};
+
+const MAO_EXPRESSIONS: Record<PetEmotion, number> = {
+  idle: 0,
+  happy: 1,
+  thinking: 4,
+  curious: 3,
+  listening: 6,
+  speaking: 0,
+  sleepy: 2,
+};
+
+/** Cubism 3/4/5 renderer backed by PixiJS 8. Desktop position remains owned by Electron. */
+export class Live2DPetAdapter implements PetModelAdapter {
+  readonly id: string;
+  private readonly assets: Live2DModelAssetPackage;
+  private app?: Application;
+  private model?: Live2DModel<CubismInternalModel>;
+  private root?: HTMLDivElement;
+  private width = 270;
+  private height = 330;
+  private baseScale = 1;
+  private emotion: PetEmotion = "idle";
+  private locomotion: PetLocomotion = "idle";
+  private action?: PetAction;
+  private actionTimer?: number;
+  private speakTimer?: number;
+  private speechUntil = 0;
+  private pointerListener?: (event: PointerEvent) => void;
+  private focus: PetFocus = { x: 0, y: 0 };
+
+  constructor(assets: Live2DModelAssetPackage) {
+    this.assets = assets;
+    this.id = `live2d:${assets.info.source}:${assets.info.id}`;
+  }
+
+  async mount(container: HTMLElement): Promise<void> {
+    configureRuntime();
+    const root = document.createElement("div");
+    root.className = "live2d-pet state-idle locomotion-idle";
+    root.dataset.model = this.assets.info.id;
+    root.setAttribute("role", "img");
+    root.setAttribute("aria-label", `Live2D 桌宠 ${this.assets.info.name}`);
+    container.replaceChildren(root);
+    this.root = root;
+    this.width = Math.max(1, container.clientWidth || this.width);
+    this.height = Math.max(1, container.clientHeight || this.height);
+
+    const app = new Application();
+    await app.init({
+      width: this.width,
+      height: this.height,
+      backgroundAlpha: 0,
+      antialias: true,
+      autoDensity: true,
+      resolution: Math.min(window.devicePixelRatio || 1, 2),
+      preference: "webgl",
+    });
+    app.canvas.className = "live2d-canvas";
+    app.canvas.setAttribute("aria-hidden", "true");
+    root.append(app.canvas);
+    this.app = app;
+
+    const model = await Live2DModel.from(createModelSettings(this.assets), {
+      autoHitTest: false,
+      autoFocus: false,
+      autoUpdate: true,
+      ticker: app.ticker,
+      textureOptions: {
+        lod: false,
+        preferCreateImageBitmap: false,
+      },
+    }) as Live2DModel<CubismInternalModel>;
+    const coreModel = model.internalModel.coreModel;
+    coreModel.setOverrideFlagForModelCullings(true);
+    for (let index = 0; index < coreModel.getDrawableCount(); index += 1) {
+      coreModel.setDrawableCulling(index, false);
+    }
+    this.installTextureUploadCompatibility(model);
+    app.stage.addChild(model);
+    this.model = model;
+    model.on("beforeModelUpdate", () => this.applyLipSync());
+    this.fitModel();
+    this.setFocus(this.focus);
+    this.playIdle();
+
+    this.pointerListener = (event) => {
+      const bounds = root.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+      const x = Math.max(-1, Math.min(1, ((event.clientX - bounds.left) / bounds.width) * 2 - 1));
+      const y = Math.max(-1, Math.min(1, ((event.clientY - bounds.top) / bounds.height) * 2 - 1));
+      this.setFocus({ x, y: -y });
+    };
+    window.addEventListener("pointermove", this.pointerListener, { passive: true });
+  }
+
+  setState(state: PetEmotion): void {
+    if (state === this.emotion) return;
+    this.root?.classList.remove(`state-${this.emotion}`);
+    this.emotion = state;
+    this.root?.classList.add(`state-${state}`);
+    this.applyEmotionExpression();
+  }
+
+  setLocomotion(state: PetLocomotion): void {
+    this.root?.classList.remove(`locomotion-${this.locomotion}`);
+    this.locomotion = state;
+    this.root?.classList.add(`locomotion-${state}`);
+    this.applyTransform();
+  }
+
+  setFocus(focus: PetFocus): void {
+    this.focus = {
+      x: Math.max(-1, Math.min(1, focus.x)),
+      y: Math.max(-1, Math.min(1, focus.y)),
+    };
+    this.model?.focus(this.focus.x, this.focus.y);
+  }
+
+  playAction(action: PetAction): boolean {
+    if (!this.root || !this.model) return false;
+    if (this.action) this.root.classList.remove(`action-${this.action}`);
+    if (this.actionTimer) window.clearTimeout(this.actionTimer);
+    this.model.stopMotions();
+    this.action = action;
+    this.root.classList.add(`action-${action}`);
+    const motion = BUNDLED_ACTION_MOTIONS[this.assets.info.id]?.[action] ?? {
+      groups: ["TapBody", "Tap", "Touch", "Action"],
+      index: ACTION_INDEX[action],
+    };
+    this.playMotion(motion.groups, motion.index, MotionPriority.FORCE);
+    this.actionTimer = window.setTimeout(() => {
+      this.root?.classList.remove(`action-${action}`);
+      if (this.action === action) this.action = undefined;
+      this.model?.stopMotions();
+      this.applyTransform();
+      this.applyEmotionExpression();
+      this.playIdle();
+    }, ACTION_DURATION[action]);
+    return true;
+  }
+
+  async speak(text: string): Promise<void> {
+    const duration = Math.min(7000, Math.max(900, text.length * 105));
+    this.speechUntil = performance.now() + duration;
+    this.root?.classList.add("is-speaking");
+    if (this.speakTimer) window.clearTimeout(this.speakTimer);
+    await new Promise<void>((resolve) => {
+      this.speakTimer = window.setTimeout(() => {
+        this.speechUntil = 0;
+        this.root?.classList.remove("is-speaking");
+        resolve();
+      }, duration);
+    });
+  }
+
+  resize(width: number, height: number): void {
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
+    this.app?.renderer.resize(this.width, this.height);
+    this.fitModel();
+  }
+
+  destroy(): void {
+    if (this.actionTimer) window.clearTimeout(this.actionTimer);
+    if (this.speakTimer) window.clearTimeout(this.speakTimer);
+    if (this.pointerListener) window.removeEventListener("pointermove", this.pointerListener);
+    this.pointerListener = undefined;
+    const model = this.model;
+    model?.stopMotions();
+    if (model && this.app) {
+      // Destroy the Live2D child while its ticker is still alive. Pixi destroys
+      // application plugins before stage children, which otherwise makes the
+      // model unregister from an already-destroyed ticker during hot switching.
+      this.app.stage.removeChild(model);
+      this.destroyModelCompatibility(model);
+    }
+    this.model = undefined;
+    // Live2D textures are cached by data URL. Keep their CPU sources valid so a model
+    // can be selected again after its old WebGL context has been released.
+    this.app?.destroy({ removeView: true }, { children: true, texture: false, textureSource: false, context: true });
+    this.app = undefined;
+    this.root?.remove();
+    this.root = undefined;
+  }
+
+  private findMotionGroup(...aliases: string[]): string | undefined {
+    const groups = Object.keys(this.assets.info.motionGroups);
+    for (const alias of aliases) {
+      const group = groups.find((candidate) => candidate.toLowerCase() === alias.toLowerCase());
+      if (group) return group;
+    }
+    return undefined;
+  }
+
+  private playIdle(): void {
+    const group = this.findMotionGroup("Idle", "idle");
+    if (!group || !this.model) return;
+    const count = this.assets.info.motionGroups[group] ?? 0;
+    if (!count) return;
+    const index = this.assets.info.source === "bundled" ? 0 : Math.floor(Math.random() * count);
+    void this.model.motion(group, index, MotionPriority.IDLE, { loop: true }).catch(() => false);
+  }
+
+  private playMotion(groups: string[], index: number, priority: MotionPriority): void {
+    const group = this.findMotionGroup(...groups);
+    if (!group || !this.model) return;
+    const count = this.assets.info.motionGroups[group] ?? 0;
+    if (!count) return;
+    void this.model.motion(group, index % count, priority, { loop: false }).catch(() => false);
+  }
+
+  private applyEmotionExpression(): void {
+    const expression = MAO_EXPRESSIONS[this.emotion];
+    if (this.assets.info.id === "mao" && this.assets.info.expressionCount > expression) {
+      void this.model?.expression(expression).catch(() => false);
+    }
+  }
+
+  private fitModel(): void {
+    const model = this.model;
+    if (!model) return;
+    const bounds = this.getVisibleBounds(model);
+    this.baseScale = Math.min((this.width * 0.94) / bounds.width, (this.height * 0.98) / bounds.height);
+    model.pivot.set(bounds.centerX, bounds.bottom);
+    this.applyTransform();
+  }
+
+  private getVisibleBounds(model: Live2DModel<CubismInternalModel>): {
+    width: number;
+    height: number;
+    centerX: number;
+    bottom: number;
+  } {
+    const internal = model.internalModel;
+    const core = internal.coreModel;
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < core.getDrawableCount(); index += 1) {
+      if (core.getDrawableOpacity(index) <= 0.001) continue;
+      const bounds = internal.getDrawableBounds(index);
+      if (![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) continue;
+      left = Math.min(left, bounds.x);
+      top = Math.min(top, bounds.y);
+      right = Math.max(right, bounds.x + bounds.width);
+      bottom = Math.max(bottom, bounds.y + bounds.height);
+    }
+    if (right <= left || bottom <= top) {
+      left = 0;
+      top = 0;
+      right = Math.max(1, internal.width);
+      bottom = Math.max(1, internal.height);
+    }
+    return {
+      width: Math.max(1, right - left),
+      height: Math.max(1, bottom - top),
+      centerX: (left + right) / 2,
+      bottom,
+    };
+  }
+
+  private applyTransform(): void {
+    const model = this.model;
+    if (!model) return;
+    const facing = this.locomotion === "walk-left" ? -1 : 1;
+    model.scale.set(this.baseScale * facing, this.baseScale);
+    model.position.set(this.width / 2, this.height - 2);
+    model.rotation = this.locomotion === "dragged"
+      ? -0.08
+      : this.locomotion === "falling"
+        ? 0.1
+        : 0;
+  }
+
+  private applyLipSync(): void {
+    if (!this.model || performance.now() >= this.speechUntil) return;
+    const internal = this.model.internalModel as CubismInternalModel & {
+      getIdSafe(id: string): unknown;
+      coreModel: { addParameterValueById(id: unknown, value: number, weight?: number): void };
+    };
+    const parameters = this.assets.info.lipSyncParameters;
+    if (!parameters.length) return;
+    const value = 0.12 + Math.abs(Math.sin(performance.now() / 92)) * 0.72;
+    for (const parameter of parameters) {
+      internal.coreModel.addParameterValueById(internal.getIdSafe(parameter), value, 1);
+    }
+  }
+
+  private installTextureUploadCompatibility(model: Live2DModel<CubismInternalModel>): void {
+    type Texture = Live2DModel<CubismInternalModel>["textures"][number];
+    type UploadTarget = {
+      uploadTextureForRender(renderer: WebGLRenderer, texture: Texture, shouldUpdateTexture: boolean): void;
+    };
+    const target = model as unknown as UploadTarget;
+    // Engine 1.3.1 still probes TextureSource._gpuData, removed by PixiJS 8.13.
+    // Binding through Pixi's public texture system creates/reuses the GL source safely.
+    target.uploadTextureForRender = (renderer, texture) => {
+      renderer.gl.pixelStorei(renderer.gl.UNPACK_FLIP_Y_WEBGL, model.internalModel.textureFlipY);
+      renderer.texture.bind(texture, 0);
+    };
+  }
+
+  private destroyModelCompatibility(model: Live2DModel<CubismInternalModel>): void {
+    type MocHandle = { _modelCount?: number; release(): void };
+    const internal = model.internalModel as CubismInternalModel & { __moc?: MocHandle };
+    const moc = internal.__moc;
+    if (moc) {
+      // Engine 1.3.1 releases the Moc from an early `destroy` event, before the
+      // core model is released, and never decrements CubismMoc._modelCount.
+      // Defer that one listener until after model.destroy() to preserve the
+      // official model-then-Moc lifetime and avoid a Cubism assertion.
+      internal.removeAllListeners("destroy");
+    }
+    model.destroy({ children: true, texture: false, baseTexture: false });
+    if (moc) {
+      if (typeof moc._modelCount === "number" && moc._modelCount > 0) moc._modelCount -= 1;
+      moc.release();
+      internal.__moc = undefined;
+    }
+  }
+
+}
