@@ -31,11 +31,16 @@ flowchart LR
   UI --> Fallback[DefaultPetAdapter]
   Main --> Move[DesktopMovementController]
   Move --> UI
+  Agent --> Reaction[reaction-inference]
+  Reaction --> UI
+  UI --> Director[PetReactionDirector]
+  Director --> Live2DModel
 ```
 
 - `main.ts`：纯宠物窗口、右键菜单、独立控制面板、托盘、进程生命周期和 IPC 边界。
-- `DesktopMovementController`：管理焦点/指针暂停原因，在显示器工作区内处理自主漫游、全局鼠标拖拽、重力下落和动作信号。
-- `AgentService`：检索记忆、注入结构化人格状态、生成回复、主动开场、L2 提炼和模型人格证据提取。
+- `DesktopMovementController`：管理焦点/指针暂停原因，在显示器工作区内处理自主漫游、全局鼠标拖拽、重力下落、约 320ms 落地阶段，并每 33ms 发送连续 `PetMotionFrame` 与单一全局焦点。
+- `pet-motion`：不依赖 Electron 的焦点归一化、连续运动帧计算、数值边界和落地状态归约器。
+- `AgentService`：检索记忆、注入结构化人格状态、生成回复、主动开场、L2 提炼和模型人格证据提取；普通与主动回复都经本地纯函数 `inferReaction()` 生成情绪标签。
 - `HeartbeatService`：定时器、迁移/整理触发、主动聊天约束和心跳审计。
 - `MemoryEngine`：L1 缓冲、L2 事件化、L3 候选生成与上下文检索。
 - `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释完整检索、聊天时态视图检索、串行写入、临时文件替换和损坏文件隔离。
@@ -43,17 +48,21 @@ flowchart LR
 - `PersonalityStore`：独立持久化人格状态和已复盘 L2 ID；使用临时文件替换，损坏时隔离并回到空白人格。
 - `ModelStore`：在主进程校验并复制用户选择的 Cubism `.model3.json` 资源，持久化当前模型，并向宠物窗口返回不含本地路径的受限资源包。
 - `OpenAICompatibleTtsClient`：可选云端模式的 `/audio/speech` 客户端；本机模式会在主进程边界直接拒绝云端生成，云端模式才读取独立 Base URL 和加密凭据。
-- `VoiceService`：采集麦克风、执行轻量 VAD、下采样为 16 kHz PCM16；同时负责兼容 Web Speech、云端 TTS 请求、本机 `speechSynthesis` 回退、播放打断和过期结果丢弃。
-- `LocalAsrService / local-asr-worker`：主进程校验宠物窗口提交的音频边界，按需在独立 worker 中加载 sherpa-onnx 与项目内 14M 中文 Zipformer，避免识别阻塞 Electron 主线程。模型缺失/大小异常、初始化超时和识别超时都有显式错误。
-- `Live2DPetAdapter`：使用 PixiJS 8、Cubism Framework 与官方 Core 5.1 渲染内置和用户导入模型，处理 motion、自动取景、口型、视线、物理与模型资源释放。
+- `VoiceService`：用一个幂等 operation 贯穿麦克风启动、录音、VAD、16 kHz 下采样、识别、取消和 35 秒 Renderer 看门狗；同时负责兼容 Web Speech、云端 TTS、本机 `speechSynthesis` 回退、播放打断和过期结果丢弃。
+- `LocalAsrService / local-asr-worker`：主进程校验宠物窗口提交的音频边界，在独立 worker 中加载 sherpa-onnx 与项目内 14M 中文 Zipformer。启动后非阻塞预热；初始化和交互识别各有 30 秒上限，取消、超时、退出或提交失败统一 reject pending、终止 worker 并允许下一次重建。计时器可注入，关键恢复竞态使用假时钟测试。
+- `live2d-interaction`：不依赖 DOM/Pixi 的真实参数能力绑定、焦点阻尼、拖拽/下落/落地变形、13 项动作映射、资源时长解析与程序化兜底。
+- `PetReactionDirector`：在 Renderer 内把回复情绪和文本映射为至多一个动作；处理强动作冷却、录音/拖拽优先级、最新待执行动作和手动预览优先级。
+- `Live2DPetAdapter`：使用 PixiJS 8、Cubism Framework 与官方 Core 5.1 渲染内置和用户导入模型，处理真实索引参数写入、motion、自动取景、口型、视线、物理、弹簧变形与模型资源释放。
 - `DefaultPetAdapter`：Live2D 加载或 WebGL 初始化失败时使用的轻量程序化后备模型，保证聊天和桌面交互仍可用。
 - `PetModelAdapter`：模型渲染边界，使 Agent、桌面移动和具体 2D Runtime 彼此解耦。
 
 ## 桌面交互与移动
 
-PetWindow 默认开启鼠标穿透，只在鼠标进入宠物本体或字幕式对话坞时临时接收事件。普通回复只短暂显示当前一句字幕；鼠标靠近或普通点击才展开输入命令条。按下左键并移动超过 5px 后，Renderer 通过白名单 IPC 启动拖拽，主进程使用全局鼠标坐标移动真实 Electron 窗口。松手后控制器以加速下落方式把窗口放回当前显示器工作区底部。
+PetWindow 默认开启鼠标穿透，只在鼠标进入宠物本体或字幕式对话坞时临时接收事件。普通回复只短暂显示当前一句字幕；鼠标靠近或普通点击才展开输入命令条。按下左键并移动超过 5px 后，Renderer 通过白名单 IPC 启动拖拽，主进程使用全局鼠标坐标移动真实 Electron 窗口。每个移动 tick 根据窗口位移生成方向、速度和相对偏移均限制在 `[-1,1]` 的 `PetMotionFrame`；松手后窗口沿纵向加速下落，最后水平速度只保留在运动帧中驱动模型倾斜，触地后保持约 320ms `landing` 再回到空闲。
 
-移动控制器的优先级为：拖拽 → 下落 → 焦点/指针交互暂停 → 自主漫游。拖拽和落地不受“允许自由移动”开关影响；该开关只控制自主漫游。宠物窗口获得焦点时保持原地，失焦且鼠标不再与宠物交互后恢复选点行走。Renderer 只收到 `idle / walk-left / walk-right / dragged / falling` 语义状态，Live2D 或其他 2D 适配器自行决定对应视觉反馈。
+移动控制器的优先级为：拖拽 → 下落 → 落地 → 焦点/指针交互暂停 → 自主漫游。拖拽和落地不受“允许自由移动”开关影响；该开关只控制自主漫游。宠物窗口获得焦点时保持原地，失焦且鼠标不再与宠物交互后恢复选点行走。Renderer 通过 `onPetMotion()` 接收 `idle / walk-left / walk-right / dragged / falling / landing` 连续帧，并只经 `PetModelAdapter.setMotion()` 交给具体 Runtime。
+
+正式 Electron 页面不监听 Renderer 局部 `pointermove` 作为视线源。主进程每 33ms 读取 `screen.getCursorScreenPoint()`，以窗口中模型视觉中心为原点，使用水平 640px、垂直 480px 半径归一化到 `[-1,1]`；浏览器预览也通过 mock bridge 复用 `onPetFocus`。Live2D 加载后枚举 moc 的真实参数索引，只绑定存在的 `ParamEyeBallX/Y`、`ParamAngleX/Y/Z`、`ParamBodyAngleX` 或旧式 `PARAM_ANGLE_* / PARAM_BODY_ANGLE_* / PARAM_EAR_L/R`，并用 `addParameterValueByIndex()` 追加阻尼值。没有眼球 XY 的模型会提高头身权重，Wanko 的双耳获得相反方向的轻微反馈。
 
 ## 模型导入与动作
 
@@ -63,11 +72,13 @@ Renderer 保持 `sandbox: true`、`contextIsolation: true` 和 `nodeIntegration:
 
 模型语义分成三个动画轨道：
 
-1. 基础移动状态：`idle / walk / dragged / falling`，由桌面移动控制器驱动；模型水平翻转和程序化变换只影响画面，不改变窗口坐标。
-2. 情绪状态：`happy / thinking / curious / listening / speaking / sleepy`，由聊天和语音状态驱动，并可触发 `TapBody` motion。
-3. 一次性动作：`wave / jump / dance / sit / sleep / surprised`，由 `PetAction` 白名单事件驱动，按 `TapBody` 索引选择 motion，并在结束后回到 `Idle`。
+1. 基础移动状态：`idle / walk-left / walk-right / dragged / falling / landing`，由桌面移动控制器驱动；模型水平翻转、弹簧滞后、拉伸和压缩只影响画面，不改变窗口坐标。
+2. 情绪状态：`idle / happy / excited / thinking / curious / listening / speaking / comforting / shy / surprised / sleepy`，由聊天回复和语音 operation 驱动。
+3. 一次性动作：`wave / nod / shake-head / head-tilt / jump / cheer / dance / sit / stretch / shy / comfort / sleep / surprised`，由白名单手动事件或 `PetReactionDirector` 驱动。
 
-导入模型可以没有 motion、expression 或物理文件。适配器优先查找 `Idle` 与 `TapBody / Tap / Touch / Action` 动作组；缺失时继续提供 CSS 状态反馈，不让桌宠崩溃。模型切换时先销毁旧 Pixi Application、贴图和 WebGL 上下文，再挂载新模型；资源解析或 WebGL 初始化失败时 Renderer 自动恢复轻量后备模型。可见网格自动取景和关闭 2D 面剔除使早期 Cubism 3 模型也能稳定显示。
+导入模型可以没有 motion、expression 或物理文件。`Idle` 仍作为循环待机；三套内置模型对全部 13 项动作使用明确且经资源组/索引校验的映射，并从实际 `.motion3.json` 的 `Meta.Duration` 读取 600～12,000ms 时长。导入模型或缺少语义资源时使用确定的程序化变形，不伪造 motion 引用。模型切换时先清理动作计时器、落地时钟和弹簧状态，再保持既有 Pixi ticker、模型、贴图、WebGL 与 Moc 的安全释放顺序；加载失败时保留当前模型或恢复轻量后备模型。
+
+每条普通或主动回复先由 `inferReaction(userText,responseText)` 按“安慰 → 惊讶 → 兴奋 → 害羞 → 困倦 → 思考 → 好奇 → 开心”高信号顺序产生情绪。Renderer 立即更新情绪，再由导演选择 0～1 个动作；强动作共用 12 秒冷却。录音、`dragged / falling / landing` 期间只保留最新自动动作，恢复后才释放。手动预览会立即播放、清空待执行自动动作，并在固定 12 秒的最长资源窗口内抑制新的自动动作；重复手动预览会从最近一次动作重新计算该窗口。
 
 ## 心跳流程
 
@@ -127,14 +138,21 @@ sequenceDiagram
   participant M as Electron 主进程
   participant W as LocalAsrWorker
   participant T as OpenAI 兼容 TTS
+  M->>W: 应用初始化后非阻塞 warmup（≤30s）
   alt 项目内离线识别（默认）
     U->>U: getUserMedia + VAD + 16 kHz PCM16
     U->>P: recognizeLocalSpeech(PCM)
     P->>M: voice:recognize-local IPC
     M->>M: 校验窗口、模式、采样率、0.25～30 秒
-    M->>W: 转移 ArrayBuffer
+    M->>W: 转移 ArrayBuffer（总时限≤30s）
     W->>W: sherpa-onnx Zipformer 本机解码
     W-->>U: 识别文本
+    opt 识别阶段再次点击或 Renderer 35s 看门狗
+      U->>P: cancelLocalSpeechRecognition()
+      P->>M: voice:cancel-local IPC
+      M->>W: reject pending + terminate
+      U->>U: 立即清空 interim 并 settle 一次
+    end
   else Chromium 兼容识别
     U->>U: Web Speech（可能联网）
   end
@@ -155,7 +173,11 @@ sequenceDiagram
   end
 ```
 
-`recognitionMode=local` 完全绕过 Chromium Web Speech，使用项目 `resources/voice/` 中经过固定 SHA-256 校验的 ONNX 模型；模型不打入安装包，可通过 `npm run voice:model:download` 按需下载。Electron 43 暴露的 `processLocally` 会因缺少 `media.mojom.OnDeviceSpeechRecognition` 服务终止渲染进程，因此代码中禁止本地模式调用该路径。`browser` 兼容模式可能联网。`ttsMode=local` 完全绕过 IPC 和外部端点；`cloud` 模式使用 `voice.ttsBaseUrl / ttsModel / ttsVoice / ttsSpeed` 和独立 TTS API Key，任一阶段失败都回退 `speechSynthesis`。聊天仍独立使用 `provider.baseUrl / model` 和聊天 API Key。渲染进程只获得两组凭据是否存在的布尔状态，不能读取明文 Key。每次新回复递增请求序号并停止当前音频，因此晚返回的旧请求会被忽略。
+`recognitionMode=local` 完全绕过 Chromium Web Speech，使用项目 `resources/voice/` 中经过固定 SHA-256 校验的 ONNX 模型；模型不打入安装包，可通过 `npm run voice:model:download` 按需下载。Electron 43 暴露的 `processLocally` 会因缺少 `media.mojom.OnDeviceSpeechRecognition` 服务终止渲染进程，因此代码中禁止本地模式调用该路径。`browser` 兼容模式可能联网。
+
+本地 operation 在调用 `getUserMedia()` 前创建，阶段为 `starting → recording → recognizing → cancelling/idle`。轨道、AudioContext、节点、回调、请求号、每秒状态计时器和 35 秒看门狗都挂在同一 operation 上；成功、空结果、错误、取消、启动失败和超时统一经过幂等收尾，先清理状态再交付最终文本。主进程 worker 事件携带来源实例并忽略旧 worker 的迟到事件；任何请求超时都会重置整个 worker，而不是只删除一个 Promise。`npm run smoke:voice-ui` 使用虚拟麦克风验证成功、取消、迟到结果隔离、worker 重建和下一次恢复。
+
+`ttsMode=local` 完全绕过 IPC 和外部端点；`cloud` 模式使用 `voice.ttsBaseUrl / ttsModel / ttsVoice / ttsSpeed` 和独立 TTS API Key，任一阶段失败都回退 `speechSynthesis`。聊天仍独立使用 `provider.baseUrl / model` 和聊天 API Key。渲染进程只获得两组凭据是否存在的布尔状态，不能读取明文 Key。每次新回复递增请求序号并停止当前音频，因此晚返回的旧请求会被忽略。
 
 ## 记忆设计
 
