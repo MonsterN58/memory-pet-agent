@@ -8,6 +8,7 @@ import {
   LocalAsrService,
   sanitizeLocalSpeechAudio,
   type LocalAsrServiceOptions,
+  type LocalAsrTimerFacade,
 } from "../src/main/local-asr-service";
 
 test("本地 ASR 清晰报告项目模型缺失", async (context) => {
@@ -90,20 +91,24 @@ test("本地 ASR 在 status 等待期间取消不会复活 worker", async () => 
 });
 
 test("本地 ASR 的 30 秒总时限包含尚未完成的 warmup", async () => {
-  const fixture = createServiceFixture({ recognitionTimeoutMs: 15, initializationTimeoutMs: 500 });
-  await assert.rejects(fixture.service.recognize(validAudio()), /本地语音识别超时/);
+  const fixture = createServiceFixture({ recognitionTimeoutMs: 30_000, initializationTimeoutMs: 30_000 });
+  const recognition = fixture.service.recognize(validAudio());
+  await waitForWorker(fixture.workers, 0);
+  fixture.timers.advanceBy(30_000);
+  await assert.rejects(recognition, /本地语音识别超时/);
   assert.equal(fixture.workers[0]?.terminateCalls, 1);
   await fixture.service.close();
 });
 
 test("本地 ASR decode 超时会重建 worker 并允许后续请求成功", async () => {
-  const fixture = createServiceFixture({ recognitionTimeoutMs: 20 });
+  const fixture = createServiceFixture({ recognitionTimeoutMs: 30_000 });
   const firstWarmup = fixture.service.warmup();
   const firstWorker = await waitForWorker(fixture.workers, 0);
   firstWorker.emitMessage({ type: "ready" });
   await firstWarmup;
   const timedOut = fixture.service.recognize(validAudio());
   await waitForRecognition(firstWorker);
+  fixture.timers.advanceBy(30_000);
   await assert.rejects(timedOut, /本地语音识别超时/);
   assert.equal(fixture.workers[0]?.terminateCalls, 1);
 
@@ -113,6 +118,18 @@ test("本地 ASR decode 超时会重建 worker 并允许后续请求成功", asy
   const request = await waitForRecognition(secondWorker);
   secondWorker.emitMessage({ type: "result", requestId: request.requestId, text: "下一次正常", processingMs: 4 });
   assert.equal((await recovered).text, "下一次正常");
+  await fixture.service.close();
+});
+
+test("本地 ASR 模型初始化超时由可注入时钟确定性重置 worker", async () => {
+  const fixture = createServiceFixture({ initializationTimeoutMs: 30_000 });
+  const warmup = fixture.service.warmup();
+  await waitForWorker(fixture.workers, 0);
+
+  fixture.timers.advanceBy(30_000);
+
+  await assert.rejects(warmup, /本地识别模型加载超时/);
+  assert.equal(fixture.workers[0]?.terminateCalls, 1);
   await fixture.service.close();
 });
 
@@ -250,8 +267,10 @@ class FakeWorker extends EventEmitter {
 function createServiceFixture(overrides: Partial<LocalAsrServiceOptions> = {}): {
   service: ReadyLocalAsrService;
   workers: FakeWorker[];
+  timers: ManualTimers;
 } {
   const workers: FakeWorker[] = [];
+  const timers = new ManualTimers();
   const service = new ReadyLocalAsrService("D:/fixture/model", {
     createWorker: () => {
       const worker = new FakeWorker();
@@ -260,9 +279,10 @@ function createServiceFixture(overrides: Partial<LocalAsrServiceOptions> = {}): 
     },
     initializationTimeoutMs: 500,
     recognitionTimeoutMs: 500,
+    timers,
     ...overrides,
   });
-  return { service, workers };
+  return { service, workers, timers };
 }
 
 function validAudio() {
@@ -273,7 +293,7 @@ async function waitForRecognition(worker: FakeWorker): Promise<{ requestId: numb
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const message = worker.messages.find((candidate) => candidate.type === "recognize");
     if (message && typeof message.requestId === "number") return { requestId: message.requestId };
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
   }
   throw new Error("worker did not receive recognize message");
 }
@@ -282,9 +302,38 @@ async function waitForWorker(workers: FakeWorker[], index: number): Promise<Fake
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const worker = workers[index];
     if (worker) return worker;
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
   }
   throw new Error(`worker ${index} was not created`);
+}
+
+class ManualTimers implements LocalAsrTimerFacade {
+  private now = 0;
+  private nextId = 0;
+  private readonly tasks = new Map<object, { callback: () => void; dueAt: number; id: number }>();
+
+  setTimeout(callback: () => void, delayMs: number): object {
+    const handle = { id: ++this.nextId };
+    this.tasks.set(handle, { callback, dueAt: this.now + delayMs, id: handle.id });
+    return handle;
+  }
+
+  clearTimeout(handle: unknown): void {
+    if (typeof handle === "object" && handle !== null) this.tasks.delete(handle);
+  }
+
+  advanceBy(elapsedMs: number): void {
+    this.now += elapsedMs;
+    while (true) {
+      const due = [...this.tasks.entries()]
+        .filter(([, task]) => task.dueAt <= this.now)
+        .sort((left, right) => left[1].dueAt - right[1].dueAt || left[1].id - right[1].id)[0];
+      if (!due) return;
+      const [handle, task] = due;
+      this.tasks.delete(handle);
+      task.callback();
+    }
+  }
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

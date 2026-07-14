@@ -25,7 +25,7 @@ interface PendingRequest {
   resolve: (value: LocalSpeechRecognitionResult) => void;
   reject: (error: Error) => void;
   durationMs: number;
-  timeout: NodeJS.Timeout;
+  timeout: unknown;
 }
 
 type WorkerResponse =
@@ -45,6 +45,12 @@ export interface LocalAsrServiceOptions {
   createWorker?: (filename: string) => LocalAsrWorker;
   initializationTimeoutMs?: number;
   recognitionTimeoutMs?: number;
+  timers?: LocalAsrTimerFacade;
+}
+
+export interface LocalAsrTimerFacade {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
 }
 
 export class LocalAsrService {
@@ -52,19 +58,24 @@ export class LocalAsrService {
   private workerReady?: Promise<void>;
   private readyResolve?: () => void;
   private readyReject?: (error: Error) => void;
-  private initializationTimeout?: NodeJS.Timeout;
+  private initializationTimeout?: unknown;
   private readyStatus?: LocalSpeechModelStatus;
   private nextRequestId = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly createWorker: (filename: string) => LocalAsrWorker;
   private readonly initializationTimeoutMs: number;
   private readonly recognitionTimeoutMs: number;
+  private readonly timers: LocalAsrTimerFacade;
   private closed = false;
 
   constructor(readonly modelDirectory: string, options: LocalAsrServiceOptions = {}) {
     this.createWorker = options.createWorker ?? ((filename) => new Worker(filename) as LocalAsrWorker);
     this.initializationTimeoutMs = options.initializationTimeoutMs ?? 30_000;
     this.recognitionTimeoutMs = options.recognitionTimeoutMs ?? 30_000;
+    this.timers = options.timers ?? {
+      setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+    };
   }
 
   async status(): Promise<LocalSpeechModelStatus> {
@@ -115,7 +126,7 @@ export class LocalAsrService {
     const requestId = ++this.nextRequestId;
     const durationMs = Math.round(audio.pcm16.byteLength / 2 / audio.sampleRate * 1000);
     return new Promise<LocalSpeechRecognitionResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const timeout = this.timers.setTimeout(() => {
         if (!this.pending.has(requestId)) return;
         this.resetWorker(new Error("本地语音识别超时"));
       }, this.recognitionTimeoutMs);
@@ -185,7 +196,7 @@ export class LocalAsrService {
       this.readyReject = reject;
     });
     this.workerReady = workerReady;
-    this.initializationTimeout = setTimeout(() => {
+    this.initializationTimeout = this.timers.setTimeout(() => {
       if (this.worker === worker) this.resetWorker(new Error("本地识别模型加载超时"));
     }, this.initializationTimeoutMs);
     try {
@@ -205,7 +216,7 @@ export class LocalAsrService {
   private handleWorkerMessage(worker: LocalAsrWorker, message: WorkerResponse): void {
     if (this.worker !== worker) return;
     if (message.type === "ready") {
-      if (this.initializationTimeout) clearTimeout(this.initializationTimeout);
+      if (this.initializationTimeout !== undefined) this.timers.clearTimeout(this.initializationTimeout);
       this.initializationTimeout = undefined;
       this.readyResolve?.();
       this.readyResolve = undefined;
@@ -223,7 +234,7 @@ export class LocalAsrService {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
     this.pending.delete(message.requestId);
-    clearTimeout(pending.timeout);
+    this.timers.clearTimeout(pending.timeout);
     pending.resolve({ text: message.text, durationMs: pending.durationMs });
   }
 
@@ -232,13 +243,13 @@ export class LocalAsrService {
     const pending = this.pending.get(requestId);
     if (!pending) return;
     this.pending.delete(requestId);
-    clearTimeout(pending.timeout);
+    this.timers.clearTimeout(pending.timeout);
     pending.reject(error);
   }
 
   private invalidateWorker(error: Error): LocalAsrWorker | undefined {
     const worker = this.worker;
-    if (this.initializationTimeout) clearTimeout(this.initializationTimeout);
+    if (this.initializationTimeout !== undefined) this.timers.clearTimeout(this.initializationTimeout);
     this.initializationTimeout = undefined;
     this.readyReject?.(error);
     this.workerReady = undefined;
