@@ -21,6 +21,7 @@ import type {
 import type { PetModelAdapter } from "./model-adapter";
 import { DefaultPetAdapter } from "./model-adapter";
 import { Live2DPetAdapter } from "./live2d-pet-adapter";
+import { PetReactionCoordinator, PetReactionDirector } from "./pet-reaction-director";
 import { VoiceService } from "./voice-service";
 
 function must<T extends Element>(selector: string): T {
@@ -157,9 +158,19 @@ async function initializePet(): Promise<void> {
     model.setState(state);
   }
 
+  function playModelAction(action: PetAction): void {
+    if (!model.playAction(action)) showToast(`当前模型暂时无法播放“${action}”动作。`);
+  }
+
+  const reactions = new PetReactionCoordinator(new PetReactionDirector(), {
+    setEmotion: setModelEmotion,
+    playAction: playModelAction,
+  });
+
   function setModelMotion(frame: PetMotionFrame): void {
     currentMotion = frame;
     model.setMotion(frame);
+    reactions.setMotion(frame.state);
   }
 
   async function switchModel(next: PetModelAdapter): Promise<void> {
@@ -294,7 +305,7 @@ async function initializePet(): Promise<void> {
   function handleResponse(response: ChatResponse): void {
     appendLine("assistant", response.text);
     must<HTMLElement>("#pet-mode-badge").textContent = response.source === "provider" ? "模型在线" : "本地陪伴";
-    setModelEmotion(response.emotion);
+    reactions.handleResponse(response);
     void model.speak(response.text);
     voice.speak(response.text);
     showDialog(false, 12_000, "caption");
@@ -343,6 +354,7 @@ async function initializePet(): Promise<void> {
       (listening, error) => {
         micButton.classList.toggle("listening", listening);
         setModelEmotion(listening ? "listening" : "idle");
+        reactions.setVoiceActive(listening);
         if (error) showToast(error);
       },
     );
@@ -388,9 +400,7 @@ async function initializePet(): Promise<void> {
     currentFocus = focus;
     model.setFocus(focus);
   });
-  bridge.onPetAction((action) => {
-    if (!model.playAction(action)) showToast(`当前模型暂时无法播放“${action}”动作。`);
-  });
+  bridge.onPetAction(playModelAction);
   bridge.onModelChanged(() => void loadConfiguredModel(true));
   bridge.onUiCommand((command) => {
     if (command === "focus-chat") showDialog(true);

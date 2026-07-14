@@ -3,13 +3,13 @@ import type {
   ChatResponse,
   LongTermCandidate,
   MemoryRecord,
-  PetEmotion,
 } from "../common/types";
 import { MemoryEngine } from "./memory/memory-engine";
 import { clamp, summarizeText } from "./memory/memory-utils";
 import { OpenAICompatibleClient } from "./provider/openai-compatible";
 import { PersonalityEngine, type PersonalitySignal } from "./personality/personality-engine";
 import { SettingsStore } from "./settings-store";
+import { inferReaction } from "./reaction-inference";
 
 const MEMORY_KIND = new Set(["episode", "fact", "preference", "reflection"]);
 
@@ -53,7 +53,7 @@ export class AgentService {
     });
     return {
       text: responseText,
-      emotion: this.inferEmotion(responseText),
+      emotion: inferReaction(text, responseText),
       source,
       memoryRefs: memories.filter((item) => item.tier !== "L1").map((item) => item.id),
       warning,
@@ -149,7 +149,7 @@ export class AgentService {
     this.memory.recordTurn("assistant", text, "heartbeat-proactive");
     return {
       text,
-      emotion: "curious",
+      emotion: inferReaction("", text),
       source,
       memoryRefs: memories.filter((item) => item.tier !== "L1").map((item) => item.id),
     };
@@ -260,10 +260,4 @@ export class AgentService {
     }
   }
 
-  private inferEmotion(text: string): PetEmotion {
-    if (/开心|太好|真棒|哈哈|😊|！/.test(text)) return "happy";
-    if (/想起|好奇|进展|吗？|呢？/.test(text)) return "curious";
-    if (/休息|晚安|累/.test(text)) return "sleepy";
-    return "idle";
-  }
 }

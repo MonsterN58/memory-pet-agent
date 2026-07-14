@@ -3,7 +3,18 @@ export type MemoryKind = "dialogue" | "episode" | "fact" | "preference" | "refle
 export type PersistentMemoryTier = Exclude<MemoryTier, "L1">;
 export type EditableMemoryKind = Exclude<MemoryKind, "dialogue">;
 export type SpeakerRole = "user" | "assistant";
-export type PetEmotion = "idle" | "happy" | "thinking" | "curious" | "listening" | "speaking" | "sleepy";
+export type PetEmotion =
+  | "idle"
+  | "happy"
+  | "excited"
+  | "thinking"
+  | "curious"
+  | "listening"
+  | "speaking"
+  | "comforting"
+  | "shy"
+  | "surprised"
+  | "sleepy";
 export type PetLocomotion = "idle" | "walk-left" | "walk-right" | "dragged" | "falling" | "landing";
 export interface PetMotionFrame {
   state: PetLocomotion;

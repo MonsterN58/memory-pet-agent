@@ -58,10 +58,14 @@ function createModelSettings(assets: Live2DModelAssetPackage): CubismModelSettin
 const MAO_EXPRESSIONS: Record<PetEmotion, number> = {
   idle: 0,
   happy: 1,
+  excited: 1,
   thinking: 4,
   curious: 3,
   listening: 6,
   speaking: 0,
+  comforting: 5,
+  shy: 7,
+  surprised: 6,
   sleepy: 2,
 };
 
