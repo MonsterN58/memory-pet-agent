@@ -1,6 +1,12 @@
 import { BrowserWindow, screen } from "electron";
-import type { AgentSettings, PetFocus, PetLocomotion } from "../common/types";
-import { normalizeFocus } from "./pet-motion";
+import type { AgentSettings, PetFocus, PetLocomotion, PetMotionFrame } from "../common/types";
+import {
+  clampMotionFrame,
+  deriveMotionFrame,
+  normalizeFocus,
+  reduceLanding,
+  type MotionBounds,
+} from "./pet-motion";
 
 type PauseReason = "pointer" | "focus";
 
@@ -11,16 +17,22 @@ export class DesktopMovementController {
   private falling = false;
   private dragOffset = { x: 0, y: 0 };
   private fallVelocity = 0;
+  private fallVelocityX = 0;
+  private landingUntil?: number;
   private targetX?: number;
   private nextDecisionAt = Date.now() + 2500;
-  private lastSignal: PetLocomotion = "idle";
+  private previousBounds?: MotionBounds;
+  private previousMotionAt = Date.now();
+  private lastMotion: PetMotionFrame = {
+    state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
+  };
   private lastFocus?: PetFocus;
   private lastFocusAt = 0;
 
   constructor(
     private readonly getWindow: () => BrowserWindow | undefined,
     private readonly getSettings: () => AgentSettings,
-    private readonly signal: (state: PetLocomotion) => void,
+    private readonly signal: (frame: PetMotionFrame) => void,
     private readonly signalFocus: (focus: PetFocus) => void,
   ) {}
 
@@ -40,7 +52,7 @@ export class DesktopMovementController {
       this.pauseReasons.add(reason);
       this.targetX = undefined;
       this.nextDecisionAt = Date.now() + 1800;
-      if (!this.dragging && !this.falling) this.emit("idle");
+      if (!this.dragging && !this.falling && this.landingUntil === undefined) this.emitCurrent("idle");
       return;
     }
 
@@ -60,8 +72,11 @@ export class DesktopMovementController {
     this.dragging = true;
     this.falling = false;
     this.fallVelocity = 0;
+    this.fallVelocityX = 0;
+    this.landingUntil = undefined;
     this.targetX = undefined;
-    this.emit("dragged");
+    this.resetMotionTracking(bounds);
+    this.emitMotion("dragged", bounds);
   }
 
   endDrag(): void {
@@ -69,8 +84,9 @@ export class DesktopMovementController {
     this.dragging = false;
     this.falling = true;
     this.fallVelocity = 2;
+    this.fallVelocityX = this.lastMotion.velocityX;
     this.targetX = undefined;
-    this.emit("falling");
+    this.emitCurrent("falling", true);
   }
 
   resetPosition(): void {
@@ -84,9 +100,13 @@ export class DesktopMovementController {
     this.dragging = false;
     this.falling = false;
     this.fallVelocity = 0;
+    this.fallVelocityX = 0;
+    this.landingUntil = undefined;
     this.targetX = undefined;
     this.nextDecisionAt = Date.now() + 2200;
-    this.emit("idle");
+    const nextBounds = { ...bounds, x, y };
+    this.resetMotionTracking(nextBounds);
+    this.emitMotion("idle", nextBounds);
   }
 
   wake(): void {
@@ -94,9 +114,10 @@ export class DesktopMovementController {
   }
 
   private tick(): void {
+    const now = Date.now();
     const window = this.getWindow();
     if (!window || window.isDestroyed() || !window.isVisible()) {
-      this.emit("idle");
+      this.signal({ state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0 });
       return;
     }
     this.emitFocus(window);
@@ -107,13 +128,26 @@ export class DesktopMovementController {
     }
 
     if (this.falling) {
-      this.fallToGround(window);
+      this.fallToGround(window, now);
+      return;
+    }
+
+    if (this.landingUntil !== undefined) {
+      const landing = reduceLanding(this.landingUntil, now);
+      if (landing.state === "landing") {
+        this.emitMotion("landing", window.getBounds(), now);
+      } else {
+        this.landingUntil = undefined;
+        this.fallVelocityX = 0;
+        this.nextDecisionAt = now + 900;
+        this.emitMotion("idle", window.getBounds(), now);
+      }
       return;
     }
 
     const settings = this.getSettings().window;
     if (!settings.roamingEnabled || this.pauseReasons.size > 0) {
-      this.emit("idle");
+      this.emitMotion("idle", window.getBounds(), now);
       return;
     }
 
@@ -123,16 +157,18 @@ export class DesktopMovementController {
     const maxX = workArea.x + workArea.width - bounds.width;
     const groundY = workArea.y + workArea.height - bounds.height;
     if (bounds.y !== groundY) window.setPosition(bounds.x, groundY, false);
+    const groundedBounds = bounds.y === groundY ? bounds : { ...bounds, y: groundY };
 
     if (this.targetX === undefined) {
-      if (Date.now() < this.nextDecisionAt) {
-        this.emit("idle");
+      if (now < this.nextDecisionAt) {
+        this.emitMotion("idle", groundedBounds, now);
         return;
       }
       const range = Math.max(1, maxX - minX);
       const candidate = Math.round(minX + range * (0.08 + Math.random() * 0.84));
       if (Math.abs(candidate - bounds.x) < 90) {
-        this.nextDecisionAt = Date.now() + 1200;
+        this.nextDecisionAt = now + 1200;
+        this.emitMotion("idle", groundedBounds, now);
         return;
       }
       this.targetX = candidate;
@@ -143,15 +179,20 @@ export class DesktopMovementController {
     const step = Math.max(1, settings.roamingSpeed * 1.8);
     if (Math.abs(delta) <= step) {
       window.setPosition(Math.round(this.targetX), groundY, false);
+      const nextBounds = { ...groundedBounds, x: Math.round(this.targetX), y: groundY };
       this.targetX = undefined;
-      this.nextDecisionAt = Date.now() + 2800 + Math.random() * 5200;
-      this.emit("idle");
+      this.nextDecisionAt = now + 2800 + Math.random() * 5200;
+      this.emitMotion("idle", nextBounds, now);
       return;
     }
 
     const nextX = Math.max(minX, Math.min(maxX, bounds.x + direction * step));
     window.setPosition(Math.round(nextX), groundY, false);
-    this.emit(direction < 0 ? "walk-left" : "walk-right");
+    this.emitMotion(
+      direction < 0 ? "walk-left" : "walk-right",
+      { ...groundedBounds, x: Math.round(nextX), y: groundY },
+      now,
+    );
   }
 
   private followCursor(window: BrowserWindow): void {
@@ -165,10 +206,10 @@ export class DesktopMovementController {
     const x = this.clamp(cursor.x - this.dragOffset.x, minX, maxX);
     const y = this.clamp(cursor.y - this.dragOffset.y, minY, maxY);
     if (bounds.x !== x || bounds.y !== y) window.setPosition(Math.round(x), Math.round(y), false);
-    this.emit("dragged");
+    this.emitMotion("dragged", { ...bounds, x: Math.round(x), y: Math.round(y) });
   }
 
-  private fallToGround(window: BrowserWindow): void {
+  private fallToGround(window: BrowserWindow, now: number): void {
     const bounds = window.getBounds();
     const workArea = screen.getDisplayMatching(bounds).workArea;
     const minX = workArea.x;
@@ -180,25 +221,61 @@ export class DesktopMovementController {
       window.setPosition(Math.round(x), groundY, false);
       this.falling = false;
       this.fallVelocity = 0;
-      this.nextDecisionAt = Date.now() + 900;
-      this.emit("idle");
+      const landing = reduceLanding(undefined, now, true);
+      this.landingUntil = landing.landingUntil;
+      this.emitMotion("landing", { ...bounds, x: Math.round(x), y: groundY }, now, true);
       return;
     }
 
     this.fallVelocity = Math.min(30, this.fallVelocity + 2.2);
     const y = Math.min(groundY, bounds.y + this.fallVelocity);
     window.setPosition(Math.round(x), Math.round(y), false);
-    this.emit("falling");
+    const nextBounds = { ...bounds, x: Math.round(x), y: Math.round(y) };
+    if (y >= groundY) {
+      this.falling = false;
+      this.fallVelocity = 0;
+      const landing = reduceLanding(undefined, now, true);
+      this.landingUntil = landing.landingUntil;
+      this.emitMotion("landing", nextBounds, now, true);
+      return;
+    }
+    this.emitMotion("falling", nextBounds, now, true);
   }
 
   private clamp(value: number, minimum: number, maximum: number): number {
     return Math.max(minimum, Math.min(maximum, value));
   }
 
-  private emit(state: PetLocomotion): void {
-    if (state === this.lastSignal) return;
-    this.lastSignal = state;
-    this.signal(state);
+  private emitCurrent(state: PetLocomotion, preserveFallVelocityX = false): void {
+    const window = this.getWindow();
+    if (!window || window.isDestroyed()) {
+      this.signal({ state, velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0 });
+      return;
+    }
+    this.emitMotion(state, window.getBounds(), Date.now(), preserveFallVelocityX);
+  }
+
+  private emitMotion(
+    state: PetLocomotion,
+    bounds: MotionBounds,
+    now = Date.now(),
+    preserveFallVelocityX = false,
+  ): void {
+    const previous = this.previousBounds ?? bounds;
+    const frame = deriveMotionFrame(previous, bounds, now - this.previousMotionAt, state);
+    const nextFrame = preserveFallVelocityX
+      ? clampMotionFrame({ ...frame, velocityX: this.fallVelocityX })
+      : frame;
+    this.previousBounds = { ...bounds };
+    this.previousMotionAt = now;
+    this.lastMotion = nextFrame;
+    this.signal(nextFrame);
+  }
+
+  private resetMotionTracking(bounds: MotionBounds): void {
+    this.previousBounds = { ...bounds };
+    this.previousMotionAt = Date.now();
+    this.lastMotion = { state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0 };
   }
 
   private emitFocus(window: BrowserWindow): void {

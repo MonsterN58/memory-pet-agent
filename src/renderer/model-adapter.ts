@@ -1,10 +1,10 @@
-import type { PetAction, PetEmotion, PetFocus, PetLocomotion } from "../common/types";
+import type { PetAction, PetEmotion, PetFocus, PetMotionFrame } from "../common/types";
 
 export interface PetModelAdapter {
   readonly id: string;
   mount(container: HTMLElement): Promise<void> | void;
   setState(state: PetEmotion): void;
-  setLocomotion(state: PetLocomotion): void;
+  setMotion(frame: PetMotionFrame): void;
   setFocus(focus: PetFocus): void;
   playAction(action: PetAction): boolean;
   speak(text: string): Promise<void>;
@@ -51,9 +51,13 @@ export class DefaultPetAdapter implements PetModelAdapter {
     this.root.classList.add(`state-${state}`);
   }
 
-  setLocomotion(state: PetLocomotion): void {
+  setMotion(frame: PetMotionFrame): void {
     if (!this.root) return;
-    this.root.dataset.locomotion = state;
+    this.root.dataset.locomotion = frame.state;
+    this.root.style.setProperty("--motion-velocity-x", String(frame.velocityX));
+    this.root.style.setProperty("--motion-velocity-y", String(frame.velocityY));
+    this.root.style.setProperty("--motion-offset-x", String(frame.offsetX));
+    this.root.style.setProperty("--motion-offset-y", String(frame.offsetY));
   }
 
   setFocus(focus: PetFocus): void {

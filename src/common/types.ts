@@ -284,7 +284,7 @@ export interface PetAgentBridge {
   playPetAction(action: PetAction): Promise<void>;
   onProactiveMessage(listener: (message: ChatResponse) => void): () => void;
   onSettingsChanged(listener: (state: PublicSettingsState) => void): () => void;
-  onLocomotion(listener: (state: PetLocomotion) => void): () => void;
+  onPetMotion(listener: (frame: PetMotionFrame) => void): () => void;
   onPetFocus(listener: (focus: PetFocus) => void): () => void;
   onPetAction(listener: (action: PetAction) => void): () => void;
   onModelChanged(listener: (state: PublicModelState) => void): () => void;

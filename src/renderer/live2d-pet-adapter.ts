@@ -8,7 +8,7 @@ import {
   MotionPriority,
   type CubismInternalModel,
 } from "untitled-pixi-live2d-engine/cubism";
-import type { Live2DModelAssetPackage, PetAction, PetEmotion, PetFocus, PetLocomotion } from "../common/types";
+import type { Live2DModelAssetPackage, PetAction, PetEmotion, PetFocus, PetMotionFrame } from "../common/types";
 import {
   advanceFocus,
   resolveFocusBindings,
@@ -145,7 +145,9 @@ export class Live2DPetAdapter implements PetModelAdapter {
   private height = 330;
   private baseScale = 1;
   private emotion: PetEmotion = "idle";
-  private locomotion: PetLocomotion = "idle";
+  private motion: PetMotionFrame = {
+    state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
+  };
   private action?: PetAction;
   private actionTimer?: number;
   private speakTimer?: number;
@@ -219,10 +221,10 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.applyEmotionExpression();
   }
 
-  setLocomotion(state: PetLocomotion): void {
-    this.root?.classList.remove(`locomotion-${this.locomotion}`);
-    this.locomotion = state;
-    this.root?.classList.add(`locomotion-${state}`);
+  setMotion(frame: PetMotionFrame): void {
+    this.root?.classList.remove(`locomotion-${this.motion.state}`);
+    this.motion = frame;
+    this.root?.classList.add(`locomotion-${frame.state}`);
     this.applyTransform();
   }
 
@@ -380,12 +382,12 @@ export class Live2DPetAdapter implements PetModelAdapter {
   private applyTransform(): void {
     const model = this.model;
     if (!model) return;
-    const facing = this.locomotion === "walk-left" ? -1 : 1;
+    const facing = this.motion.state === "walk-left" ? -1 : 1;
     model.scale.set(this.baseScale * facing, this.baseScale);
     model.position.set(this.width / 2, this.height - 2);
-    model.rotation = this.locomotion === "dragged"
+    model.rotation = this.motion.state === "dragged"
       ? -0.08
-      : this.locomotion === "falling"
+      : this.motion.state === "falling"
         ? 0.1
         : 0;
   }

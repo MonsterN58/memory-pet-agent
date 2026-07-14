@@ -18,7 +18,7 @@ import type {
   ModelImportResult,
   PetAction,
   PetFocus,
-  PetLocomotion,
+  PetMotionFrame,
   PersonalityProfile,
   PublicModelState,
   SettingsUpdate,
@@ -367,8 +367,8 @@ async function updateSettings(update: SettingsUpdate) {
   return state;
 }
 
-function sendLocomotion(state: PetLocomotion): void {
-  petWindow?.webContents.send("pet:locomotion", state);
+function sendPetMotion(frame: PetMotionFrame): void {
+  petWindow?.webContents.send("pet:motion", frame);
 }
 
 function sendFocus(focus: PetFocus): void {
@@ -601,7 +601,7 @@ async function initialize(): Promise<void> {
   movementController = new DesktopMovementController(
     () => petWindow,
     () => settingsStore.get(),
-    sendLocomotion,
+    sendPetMotion,
     sendFocus,
   );
   registerIpc();

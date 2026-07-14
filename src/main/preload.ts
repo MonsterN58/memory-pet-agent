@@ -16,7 +16,7 @@ import type {
   PetAgentBridge,
   PetAction,
   PetFocus,
-  PetLocomotion,
+  PetMotionFrame,
   PetUiCommand,
   PersonalityProfile,
   PublicSettingsState,
@@ -67,10 +67,10 @@ const bridge: PetAgentBridge = {
     ipcRenderer.on("settings:changed", callback);
     return () => ipcRenderer.removeListener("settings:changed", callback);
   },
-  onLocomotion: (listener: (state: PetLocomotion) => void) => {
-    const callback = (_event: Electron.IpcRendererEvent, state: PetLocomotion) => listener(state);
-    ipcRenderer.on("pet:locomotion", callback);
-    return () => ipcRenderer.removeListener("pet:locomotion", callback);
+  onPetMotion: (listener: (frame: PetMotionFrame) => void) => {
+    const callback = (_event: Electron.IpcRendererEvent, frame: PetMotionFrame) => listener(frame);
+    ipcRenderer.on("pet:motion", callback);
+    return () => ipcRenderer.removeListener("pet:motion", callback);
   },
   onPetFocus: (listener: (focus: PetFocus) => void) => {
     const callback = (_event: Electron.IpcRendererEvent, focus: PetFocus) => listener(focus);

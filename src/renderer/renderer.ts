@@ -13,7 +13,7 @@ import type {
   PetAction,
   PetEmotion,
   PetFocus,
-  PetLocomotion,
+  PetMotionFrame,
   PersonalityDimension,
   PersonalityProfile,
   SettingsUpdate,
@@ -79,7 +79,9 @@ async function initializePet(): Promise<void> {
   let suppressClick = false;
   let dragStartRequest: Promise<void> | undefined;
   let currentEmotion: PetEmotion = "idle";
-  let currentLocomotion: PetLocomotion = "idle";
+  let currentMotion: PetMotionFrame = {
+    state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
+  };
   let currentFocus: PetFocus = { x: 0, y: 0 };
   let modelLoadPending = false;
   let modelLoadAnnounce = false;
@@ -155,9 +157,9 @@ async function initializePet(): Promise<void> {
     model.setState(state);
   }
 
-  function setModelLocomotion(state: PetLocomotion): void {
-    currentLocomotion = state;
-    model.setLocomotion(state);
+  function setModelMotion(frame: PetMotionFrame): void {
+    currentMotion = frame;
+    model.setMotion(frame);
   }
 
   async function switchModel(next: PetModelAdapter): Promise<void> {
@@ -168,7 +170,7 @@ async function initializePet(): Promise<void> {
     try {
       await next.mount(staging);
       next.resize(mount.clientWidth, mount.clientHeight);
-      next.setLocomotion(currentLocomotion);
+      next.setMotion(currentMotion);
       next.setState(currentEmotion);
       next.setFocus(currentFocus);
       const nextRoot = staging.firstElementChild;
@@ -381,7 +383,7 @@ async function initializePet(): Promise<void> {
   });
   window.addEventListener("resize", () => model.resize(mount.clientWidth, mount.clientHeight));
 
-  bridge.onLocomotion(setModelLocomotion);
+  bridge.onPetMotion(setModelMotion);
   bridge.onPetFocus((focus) => {
     currentFocus = focus;
     model.setFocus(focus);

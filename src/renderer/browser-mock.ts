@@ -9,7 +9,7 @@ import type {
   PetAgentBridge,
   PetAction,
   PetFocus,
-  PetLocomotion,
+  PetMotionFrame,
   PetUiCommand,
   PersonalityProfile,
   PublicModelState,
@@ -55,7 +55,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   let personalityProfile: PersonalityProfile = blankPersonalityProfile();
   const proactiveListeners = new Set<(message: ChatResponse) => void>();
   const settingsListeners = new Set<(state: PublicSettingsState) => void>();
-  const locomotionListeners = new Set<(state: PetLocomotion) => void>();
+  const motionListeners = new Set<(frame: PetMotionFrame) => void>();
   const focusListeners = new Set<(focus: PetFocus) => void>();
   const uiListeners = new Set<(command: PetUiCommand) => void>();
   const panelListeners = new Set<(view: ControlPanelView) => void>();
@@ -183,12 +183,21 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     async setPetInteraction() {}, async setPetClickThrough() {},
     async startPetDrag() {
       previewDragging = true;
-      locomotionListeners.forEach((listener) => listener("dragged"));
+      motionListeners.forEach((listener) => listener({
+        state: "dragged", velocityX: 0.35, velocityY: -0.15, offsetX: 0.04, offsetY: -0.03,
+      }));
     },
     async endPetDrag() {
       previewDragging = false;
-      locomotionListeners.forEach((listener) => listener("falling"));
-      window.setTimeout(() => locomotionListeners.forEach((listener) => listener("idle")), 500);
+      motionListeners.forEach((listener) => listener({
+        state: "falling", velocityX: 0.35, velocityY: 0.55, offsetX: 0, offsetY: 0.04,
+      }));
+      window.setTimeout(() => motionListeners.forEach((listener) => listener({
+        state: "landing", velocityX: 0.2, velocityY: 0.8, offsetX: 0, offsetY: 0.04,
+      })), 180);
+      window.setTimeout(() => motionListeners.forEach((listener) => listener({
+        state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
+      })), 500);
     },
     async getModelState() { return structuredClone(modelState); },
     async getActiveModel() {
@@ -223,7 +232,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     async playPetAction(action) { actionListeners.forEach((listener) => listener(action)); },
     onProactiveMessage(listener) { proactiveListeners.add(listener); return () => proactiveListeners.delete(listener); },
     onSettingsChanged(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener); },
-    onLocomotion(listener) { locomotionListeners.add(listener); return () => locomotionListeners.delete(listener); },
+    onPetMotion(listener) { motionListeners.add(listener); return () => motionListeners.delete(listener); },
     onPetFocus(listener) { focusListeners.add(listener); return () => focusListeners.delete(listener); },
     onPetAction(listener) { actionListeners.add(listener); return () => actionListeners.delete(listener); },
     onModelChanged(listener) { modelListeners.add(listener); return () => modelListeners.delete(listener); },
@@ -245,7 +254,13 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   window.setInterval(() => {
     if (previewDragging) return;
     previewWalking = !previewWalking;
-    locomotionListeners.forEach((listener) => listener(previewWalking ? "walk-right" : "idle"));
+    motionListeners.forEach((listener) => listener({
+      state: previewWalking ? "walk-right" : "idle",
+      velocityX: previewWalking ? 0.16 : 0,
+      velocityY: 0,
+      offsetX: previewWalking ? 0.012 : 0,
+      offsetY: 0,
+    }));
   }, 3200);
 }
 
