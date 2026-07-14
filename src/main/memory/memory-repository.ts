@@ -32,6 +32,8 @@ const EMPTY_DATABASE: MemoryDatabase = {
   meta: {},
 };
 
+export const MIN_RETRIEVAL_TEXT_RELEVANCE = 0.75;
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -157,6 +159,7 @@ export class MemoryRepository {
     const now = Date.now();
     const ranked = [...this.database.l3, ...this.database.l2]
       .map((memory) => ({ memory, score: scoreMemoryBreakdown(memory, query, now) }))
+      .filter(({ score }) => score.textRelevance >= MIN_RETRIEVAL_TEXT_RELEVANCE)
       .sort((a, b) => b.score.total - a.score.total)
       .slice(0, limit);
     const accessedAt = new Date(now).toISOString();

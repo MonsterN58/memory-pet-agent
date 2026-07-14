@@ -179,7 +179,11 @@ score = 文本相关度 × 5
 
 当前中文检索使用单字和相邻双字 token，无额外模型依赖。后续可增加嵌入向量索引，但仍建议保留该词法分数作为离线后备。
 
+检索评分使用独立于 Jaccard 去重的 token 视图：保留中文相邻双字和有意义单字，移除有限的高频中文虚词；单字主题（例如“猫”“茶”）仍可命中。索引还给 kind 追加固定的本地化词，例如 `preference → 近期偏好`、`fact → 近期重要的事`、`episode → 近期计划待跟进话题`，让主动聊天的通用关注点查询保持可用。Repository 在排序前要求 `textRelevance >= 0.75`（即原始查询 token 命中比例至少约 15%），低于门槛的记录不会返回，也不会更新 `accessedAt / accessCount`。因此重要度、新鲜度和历史访问只能在已有文本或类型证据的候选之间调整顺序，不能把零相关记忆补进普通聊天、主动聊天或面板搜索。
+
 `scoreMemoryBreakdown()` 把公式拆成 `textRelevance / importance / recency / frequency / total` 五项。普通 Agent 上下文仍通过 `retrieve()` 只获取 `MemoryRecord[]`；控制面板搜索使用 `retrieveWithScores()` 获取记录和评分明细，因此“为何召回”不会进入模型提示词，也不会改变检索排序。
+
+`tests/fixtures/memory-quality-cases.ts` 提供 20 个手写中文质量 fixture，偏好更新、事实冲突、跨天跟进、持久化提示注入和用户纠错各 4 个。`npm run test:memory-quality` 使用临时版本 1 JSON 和真实 `MemoryRepository` 验证当前值排序、无关记录过滤、旧值不泄漏以及被过滤记录不获得访问强化；不依赖在线模型、上游数据集或真实用户数据。当前契约只建立检索层基线，自动冲突消解、失效历史标记、同义词与代词推理仍属于后续工作。
 
 控制面板通过 `memory:update` 和 `memory:delete` 两个白名单 IPC 管理持久记忆。主进程只接受当前 PanelWindow 发起的请求，并校验 UUID、L2/L3 层级、1～2000 字内容、允许类型以及 0～1 重要度。修正保留 `id / tier / createdAt / accessedAt / accessCount / sourceIds / tags`，重算摘要并更新 `updatedAt`；删除只移除目标记录，不级联修改其他来源或派生记忆。L1 不提供写接口。若心跳正在等待模型提炼，写入前会再次比较来源版本；期间修正或删除任何来源都会丢弃整批旧候选，避免过期内容回写 L3。
 
@@ -199,6 +203,7 @@ score = 文本相关度 × 5
 
 - 2D：在现有 Live2D 模型仓库上增加自定义缩放、expression 选择、历史导入模型切换和删除；继续通过 `PetModelAdapter` 保持 Agent 核心与渲染引擎解耦。
 - 离线语音增强：当前 sherpa-onnx Zipformer 已提供稳定本地 ASR；后续可把整段识别改为增量传输与部分结果，并增加本地神经 TTS、真实音频口型时序和模型版本/删除 UI。
+- 记忆质量：在现有 20 例检索契约上增加回复级偏好遵循、自动更新/冲突标记和过期值泄漏指标，再评估混合检索。
 - 存储：数据量上升后把 `MemoryRepository` 替换成 SQLite + FTS/向量扩展，保持 `MemoryEngine` API 不变。
 - 工具能力：在 `AgentService` 前增加显式授权的 Tool Router，不把工具执行权限隐含在普通聊天里。
 - 多模态：只在用户授权时采集屏幕或摄像头，并把感知结果作为有时效的 L1 数据，而不是默认长期保存。

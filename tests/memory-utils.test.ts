@@ -50,3 +50,26 @@ test("检索评分公开每个加权组成项", () => {
   assert.equal(score.frequency, 0);
   assert.equal(score.total, score.textRelevance + score.importance + score.recency + score.frequency);
 });
+
+test("检索评分忽略高频虚词但保留具体单字主题", () => {
+  const stopwordOnly = scoreMemoryBreakdown(memory("我今天整理了书桌", 0.8), "我想问绿萝");
+  const singleCharacterTopic = scoreMemoryBreakdown(memory("用户喜欢猫", 0.8), "聊猫");
+
+  assert.equal(stopwordOnly.textRelevance, 0);
+  assert(singleCharacterTopic.textRelevance > 0);
+});
+
+test("通用主动话题查询可以通过记忆类型召回候选", () => {
+  const preference = {
+    ...memory("用户喜欢茉莉花茶", 0.8),
+    kind: "preference" as const,
+  };
+  const fact = {
+    ...memory("用户住在杭州", 0.8),
+    kind: "fact" as const,
+  };
+  const query = "近期重要的事、计划、偏好和待跟进话题";
+
+  assert(scoreMemoryBreakdown(preference, query).textRelevance >= 0.75);
+  assert(scoreMemoryBreakdown(fact, query).textRelevance >= 0.75);
+});

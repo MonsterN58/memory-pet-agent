@@ -77,10 +77,13 @@ test("记忆搜索返回排序记录和可解释评分", async (context) => {
 
   const results = await engine.search("喜欢什么茶");
 
-  assert.equal(results.length, 2);
+  assert.equal(results.length, 1);
   assert(results[0]?.memory.content.includes("茉莉花茶"));
   assert((results[0]?.score.textRelevance ?? 0) > 0);
-  assert((results[0]?.score.total ?? 0) > (results[1]?.score.total ?? 0));
+  assert.equal(
+    engine.snapshot().l2.find((memory) => memory.content.includes("整理书桌"))?.accessCount,
+    0,
+  );
 });
 
 test("L2 修正保留来源和不可变字段并持久化", async (context) => {
