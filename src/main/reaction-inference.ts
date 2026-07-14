@@ -12,7 +12,7 @@ export function inferReaction(userText: string, responseText: string): PetEmotio
   if (/居然|竟然|意外|没想到|不可思议|吓一跳|真的吗[？！?!]/.test(combined)) return "surprised";
   if (/太棒|好耶|激动|成功啦|终于.{0,8}(成功|完成|跑起来)|[！!]{2,}/.test(combined)) return "excited";
   if (/害羞|不好意思|脸红|被你.{0,8}夸/.test(combined)) return "shy";
-  if (/困了?|想睡|晚安|早点休息|睡觉|打哈欠/.test(combined)) return "sleepy";
+  if (/(?:困了|好困|很困|有点困|犯困|困倦|困乏)(?!难|扰|惑|境)|想睡|晚安|早点休息|睡觉|打哈欠/.test(combined)) return "sleepy";
   if (/想一想|分析|考虑|思考|先拆|推理|琢磨/.test(response)) return "thinking";
   if (/为什么|怎么|如何|什么|好奇|想知道|进展|吗[？?]|呢[？?]/.test(response)) return "curious";
   if (/开心|高兴|真好|不错|喜欢|欢迎|你好|哈哈|😊|☺/.test(combined)) return "happy";
