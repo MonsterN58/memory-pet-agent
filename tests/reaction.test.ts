@@ -132,6 +132,26 @@ test("Renderer 协调器只在阻塞运动结束后释放最新动作", () => {
   assert.deepEqual(actions, ["comfort"]);
 });
 
+test("手动预览会清除待执行自动动作并在动作窗口内保持高优先级", () => {
+  let now = 70_000;
+  const actions: string[] = [];
+  const coordinator = new PetReactionCoordinator(
+    new PetReactionDirector({ now: () => now, random: () => 0 }),
+    { setEmotion: () => {}, playAction: (action) => actions.push(action) },
+  );
+
+  coordinator.setMotion("landing");
+  coordinator.handleResponse({ emotion: "curious", text: "这个机制是怎么工作的呢？" });
+  coordinator.playManualAction("dance");
+  coordinator.setMotion("idle");
+  coordinator.handleResponse({ emotion: "excited", text: "太棒了，我们再庆祝一次！" });
+  assert.deepEqual(actions, ["dance"]);
+
+  now += 12_000;
+  coordinator.handleResponse({ emotion: "curious", text: "现在可以继续看看吗？" });
+  assert.deepEqual(actions, ["dance", "head-tilt"]);
+});
+
 function reactionInput(replyId: string, emotion: PetEmotion, replyText: string) {
   return { replyId, emotion, replyText, voiceActive: false, motion: "idle" as const };
 }

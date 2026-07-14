@@ -399,7 +399,7 @@ async function initializePet(): Promise<void> {
     currentFocus = focus;
     model.setFocus(focus);
   });
-  bridge.onPetAction(playModelAction);
+  bridge.onPetAction((action) => reactions.playManualAction(action));
   bridge.onModelChanged(() => void loadConfiguredModel(true));
   bridge.onUiCommand((command) => {
     if (command === "focus-chat") showDialog(true);

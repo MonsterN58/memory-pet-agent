@@ -26,6 +26,7 @@ export interface PetReactionEffects {
 const STRONG_ACTIONS = new Set<PetAction>(["jump", "cheer", "dance", "surprised"]);
 const BLOCKING_MOTIONS = new Set<PetLocomotion>(["dragged", "falling", "landing"]);
 const STRONG_ACTION_COOLDOWN_MS = 12_000;
+const MANUAL_ACTION_PRIORITY_MS = 12_000;
 
 function isBlockingMotion(motion: PetLocomotion): boolean {
   return BLOCKING_MOTIONS.has(motion);
@@ -75,6 +76,11 @@ export class PetReactionCoordinator {
     if (wasBlocking && !isBlockingMotion(motion)) this.flush();
   }
 
+  playManualAction(action: PetAction): void {
+    this.director.beginManualAction();
+    this.effects.playAction(action);
+  }
+
   private flush(): void {
     this.play(this.director.flush({ voiceActive: this.voiceActive, motion: this.motion }));
   }
@@ -90,6 +96,7 @@ export class PetReactionDirector {
   private pending?: PetAction;
   private lastReplyId?: string;
   private lastStrongActionAt = Number.NEGATIVE_INFINITY;
+  private automaticSuppressedUntil = Number.NEGATIVE_INFINITY;
 
   constructor(options: DirectorOptions = {}) {
     this.now = options.now ?? (() => Date.now());
@@ -99,6 +106,10 @@ export class PetReactionDirector {
   choose(input: PetReactionInput): PetAction | undefined {
     if (input.replyId === this.lastReplyId) return undefined;
     this.lastReplyId = input.replyId;
+    if (this.automaticActionSuppressed()) {
+      this.pending = undefined;
+      return undefined;
+    }
     const action = this.selectAction(input.emotion, input.replyText);
     if (this.isBlocked(input)) {
       this.pending = action;
@@ -109,10 +120,19 @@ export class PetReactionDirector {
   }
 
   flush(priority: PetReactionPriority): PetAction | undefined {
+    if (this.automaticActionSuppressed()) {
+      this.pending = undefined;
+      return undefined;
+    }
     if (this.isBlocked(priority) || !this.pending) return undefined;
     const action = this.pending;
     this.pending = undefined;
     return this.authorize(action);
+  }
+
+  beginManualAction(): void {
+    this.pending = undefined;
+    this.automaticSuppressedUntil = this.now() + MANUAL_ACTION_PRIORITY_MS;
   }
 
   private selectAction(emotion: PetEmotion, text: string): PetAction | undefined {
@@ -150,5 +170,9 @@ export class PetReactionDirector {
 
   private isBlocked(priority: PetReactionPriority): boolean {
     return priority.voiceActive || isBlockingMotion(priority.motion);
+  }
+
+  private automaticActionSuppressed(): boolean {
+    return this.now() < this.automaticSuppressedUntil;
   }
 }
