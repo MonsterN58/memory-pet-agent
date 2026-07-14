@@ -38,7 +38,7 @@ flowchart LR
 - `AgentService`：检索记忆、注入结构化人格状态、生成回复、主动开场、L2 提炼和模型人格证据提取。
 - `HeartbeatService`：定时器、迁移/整理触发、主动聊天约束和心跳审计。
 - `MemoryEngine`：L1 缓冲、L2 事件化、L3 候选生成与上下文检索。
-- `MemoryRepository`：版本化存储、串行写入、临时文件替换和损坏文件隔离。
+- `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释检索、串行写入、临时文件替换和损坏文件隔离。
 - `PersonalityEngine`：从当前对话提取本地信号，在心跳中复盘新 L2，合并连续特质分数、冲突反馈、置信度与成长阶段。
 - `PersonalityStore`：独立持久化人格状态和已复盘 L2 ID；使用临时文件替换，损坏时隔离并回到空白人格。
 - `ModelStore`：在主进程校验并复制用户选择的 Cubism `.model3.json` 资源，持久化当前模型，并向宠物窗口返回不含本地路径的受限资源包。
@@ -178,6 +178,10 @@ score = 文本相关度 × 5
 ```
 
 当前中文检索使用单字和相邻双字 token，无额外模型依赖。后续可增加嵌入向量索引，但仍建议保留该词法分数作为离线后备。
+
+`scoreMemoryBreakdown()` 把公式拆成 `textRelevance / importance / recency / frequency / total` 五项。普通 Agent 上下文仍通过 `retrieve()` 只获取 `MemoryRecord[]`；控制面板搜索使用 `retrieveWithScores()` 获取记录和评分明细，因此“为何召回”不会进入模型提示词，也不会改变检索排序。
+
+控制面板通过 `memory:update` 和 `memory:delete` 两个白名单 IPC 管理持久记忆。主进程只接受当前 PanelWindow 发起的请求，并校验 UUID、L2/L3 层级、1～2000 字内容、允许类型以及 0～1 重要度。修正保留 `id / tier / createdAt / accessedAt / accessCount / sourceIds / tags`，重算摘要并更新 `updatedAt`；删除只移除目标记录，不级联修改其他来源或派生记忆。L1 不提供写接口。若心跳正在等待模型提炼，写入前会再次比较来源版本；期间修正或删除任何来源都会丢弃整批旧候选，避免过期内容回写 L3。
 
 ## 主动聊天约束
 

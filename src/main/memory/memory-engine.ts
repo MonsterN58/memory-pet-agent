@@ -3,8 +3,11 @@ import type {
   AgentSettings,
   InstantMemory,
   LongTermCandidate,
+  MemoryDeleteInput,
   MemoryRecord,
+  MemorySearchResult,
   MemorySnapshot,
+  MemoryUpdateInput,
   SpeakerRole,
 } from "../../common/types";
 import { MemoryRepository } from "./memory-repository";
@@ -108,6 +111,16 @@ export class MemoryEngine {
         candidates = undefined;
       }
     }
+    const currentById = new Map(this.repository.getL2().map((record) => [record.id, record]));
+    const sourcesChanged = pending.some((record) => {
+      const current = currentById.get(record.id);
+      return !current
+        || current.updatedAt !== record.updatedAt
+        || current.content !== record.content
+        || current.kind !== record.kind
+        || current.importance !== record.importance;
+    });
+    if (sourcesChanged) return 0;
     const finalCandidates = dedupeCandidates(candidates?.length ? candidates : this.heuristicCandidates(pending));
     return this.repository.consumeL2(
       pending.map((item) => item.id),
@@ -121,8 +134,18 @@ export class MemoryEngine {
     return [...instant, ...persistent].slice(0, limit + 4);
   }
 
-  async search(query: string, limit = 20): Promise<MemoryRecord[]> {
-    return this.repository.retrieve(query, limit);
+  async search(query: string, limit = 20): Promise<MemorySearchResult[]> {
+    return this.repository.retrieveWithScores(query, limit);
+  }
+
+  async updateMemory(input: MemoryUpdateInput): Promise<MemorySnapshot> {
+    await this.repository.updateMemory(input);
+    return this.snapshot();
+  }
+
+  async deleteMemory(input: MemoryDeleteInput): Promise<MemorySnapshot> {
+    await this.repository.deleteMemory(input);
+    return this.snapshot();
   }
 
   snapshot(): MemorySnapshot {

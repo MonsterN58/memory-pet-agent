@@ -3,7 +3,9 @@ import type {
   AgentSettings,
   ChatResponse,
   ControlPanelView,
+  EditableMemoryKind,
   MemoryRecord,
+  MemoryScoreBreakdown,
   MemorySnapshot,
   LocalSpeechModelStatus,
   PublicSettingsState,
@@ -485,38 +487,251 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     select.value = state.kind === "bundled" ? state.model.id : state.bundledModels[0]?.id ?? "";
   }
 
-  function renderMemory(records: MemoryRecord[]): void {
+  interface DisplayMemory {
+    memory: MemoryRecord;
+    score?: MemoryScoreBreakdown;
+  }
+
+  const editableKinds: EditableMemoryKind[] = ["episode", "fact", "preference", "reflection"];
+
+  function formatDateTime(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
+  }
+
+  function snapshotItems(snapshot: MemorySnapshot): DisplayMemory[] {
+    return [...snapshot.l3, ...snapshot.l2, ...snapshot.l1]
+      .reverse()
+      .map((memory) => ({ memory }));
+  }
+
+  function renderSnapshot(snapshot: MemorySnapshot): void {
+    renderCounts(snapshot);
+    renderMemory(snapshotItems(snapshot));
+  }
+
+  function renderMemory(items: DisplayMemory[]): void {
     const list = must<HTMLElement>("#memory-list");
     list.replaceChildren();
-    if (records.length === 0) {
+    if (items.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
       empty.textContent = "还没有可展示的记忆。和桌宠聊一会儿，或明确保存一件事吧。";
       list.append(empty);
       return;
     }
-    for (const record of records) {
+    for (const item of items) {
+      const { memory: record, score } = item;
       const card = document.createElement("article");
       card.className = "memory-card";
+      card.dataset.tier = record.tier;
+      card.dataset.memoryId = record.id;
       const header = document.createElement("header");
       const tier = document.createElement("b");
       tier.textContent = `${record.tier} · ${kindLabel(record.kind)}`;
       const time = document.createElement("time");
       time.textContent = new Date(record.updatedAt).toLocaleDateString("zh-CN");
+      time.dateTime = record.updatedAt;
       header.append(tier, time);
       const content = document.createElement("p");
       content.textContent = record.summary || record.content;
       const footer = document.createElement("footer");
       footer.textContent = `重要度 ${Math.round(record.importance * 100)}% · 访问 ${record.accessCount} 次${record.tags.length ? ` · ${record.tags.slice(0, 3).join(" / ")}` : ""}`;
-      card.append(header, content, footer);
+
+      const details = document.createElement("details");
+      details.className = "memory-details";
+      const detailsSummary = document.createElement("summary");
+      detailsSummary.textContent = "查看详情与来源";
+      const fullContent = document.createElement("p");
+      fullContent.className = "memory-full-content";
+      fullContent.textContent = record.content;
+      const metadata = document.createElement("dl");
+      metadata.className = "memory-metadata";
+      const metadataRows: Array<[string, string]> = [
+        ["创建时间", formatDateTime(record.createdAt)],
+        ["更新时间", formatDateTime(record.updatedAt)],
+        ["最近访问", formatDateTime(record.accessedAt)],
+        ["标签", record.tags.length ? record.tags.join(" / ") : "无标签"],
+      ];
+      for (const [label, value] of metadataRows) {
+        const row = document.createElement("div");
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        term.textContent = label;
+        description.textContent = value;
+        row.append(term, description);
+        metadata.append(row);
+      }
+
+      const sourceBlock = document.createElement("section");
+      sourceBlock.className = "memory-sources";
+      const sourceTitle = document.createElement("strong");
+      sourceTitle.textContent = "来源链";
+      const sourceHint = document.createElement("p");
+      if (record.sourceIds.length === 0) {
+        sourceHint.textContent = record.tags.includes("explicit")
+          ? "由你明确保存，没有上游记忆标识。"
+          : "没有上游来源标识。";
+        sourceBlock.append(sourceTitle, sourceHint);
+      } else {
+        sourceHint.textContent = `${record.sourceIds.length} 个上游标识；上游 L1/L2 可能已按记忆生命周期迁移或清理。`;
+        const sourceList = document.createElement("div");
+        sourceList.className = "memory-source-list";
+        for (const sourceId of record.sourceIds) {
+          const source = document.createElement("code");
+          source.textContent = sourceId;
+          source.title = sourceId;
+          sourceList.append(source);
+        }
+        sourceBlock.append(sourceTitle, sourceHint, sourceList);
+      }
+
+      details.append(detailsSummary, fullContent, metadata, sourceBlock);
+      if (score) {
+        const recall = document.createElement("section");
+        recall.className = "memory-recall-score";
+        const recallTitle = document.createElement("strong");
+        recallTitle.textContent = "为何召回";
+        const scoreGrid = document.createElement("div");
+        for (const [label, value] of [
+          ["文本匹配", score.textRelevance],
+          ["重要度", score.importance],
+          ["新近程度", score.recency],
+          ["访问强化", score.frequency],
+        ] as Array<[string, number]>) {
+          const scoreItem = document.createElement("span");
+          scoreItem.textContent = `${label} +${value.toFixed(2)}`;
+          scoreGrid.append(scoreItem);
+        }
+        const total = document.createElement("p");
+        total.textContent = `综合分 ${score.total.toFixed(2)}，按当前本地词法检索规则排序。`;
+        recall.append(recallTitle, scoreGrid, total);
+        details.append(recall);
+      }
+
+      card.append(header, content, footer, details);
+
+      if (record.tier === "L2" || record.tier === "L3") {
+        const persistentTier = record.tier;
+        const actions = document.createElement("div");
+        actions.className = "memory-card-actions";
+        const editButton = document.createElement("button");
+        editButton.type = "button";
+        editButton.className = "memory-edit-button";
+        editButton.textContent = "修正";
+        editButton.setAttribute("aria-expanded", "false");
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "memory-delete-button";
+        deleteButton.textContent = "删除";
+        actions.append(editButton, deleteButton);
+
+        const editForm = document.createElement("form");
+        editForm.className = "memory-edit-form";
+        editForm.hidden = true;
+        const tierNote = document.createElement("p");
+        tierNote.className = "memory-tier-lock";
+        tierNote.textContent = `${persistentTier} 层级保持不变`;
+
+        const kindField = document.createElement("label");
+        kindField.textContent = "记忆类型";
+        const kindSelect = document.createElement("select");
+        kindSelect.name = "kind";
+        for (const kind of editableKinds) kindSelect.append(new Option(kindLabel(kind), kind));
+        kindSelect.value = record.kind === "dialogue" ? "episode" : record.kind;
+        kindField.append(kindSelect);
+
+        const contentField = document.createElement("label");
+        contentField.textContent = "记忆内容";
+        const contentInput = document.createElement("textarea");
+        contentInput.name = "content";
+        contentInput.maxLength = 2000;
+        contentInput.required = true;
+        contentInput.value = record.content;
+        contentField.append(contentInput);
+
+        const importanceField = document.createElement("label");
+        importanceField.textContent = "重要度（0 到 1）";
+        const importanceInput = document.createElement("input");
+        importanceInput.name = "importance";
+        importanceInput.type = "number";
+        importanceInput.min = "0";
+        importanceInput.max = "1";
+        importanceInput.step = "0.01";
+        importanceInput.required = true;
+        importanceInput.value = String(record.importance);
+        importanceField.append(importanceInput);
+
+        const formActions = document.createElement("div");
+        formActions.className = "memory-edit-actions";
+        const saveButton = document.createElement("button");
+        saveButton.type = "submit";
+        saveButton.className = "primary-button";
+        saveButton.textContent = "保存修正";
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "secondary-button";
+        cancelButton.textContent = "取消";
+        formActions.append(saveButton, cancelButton);
+        editForm.append(tierNote, kindField, contentField, importanceField, formActions);
+
+        editButton.addEventListener("click", () => {
+          editForm.hidden = false;
+          editButton.hidden = true;
+          editButton.setAttribute("aria-expanded", "true");
+          contentInput.focus();
+        });
+        cancelButton.addEventListener("click", () => {
+          kindSelect.value = record.kind === "dialogue" ? "episode" : record.kind;
+          contentInput.value = record.content;
+          importanceInput.value = String(record.importance);
+          editForm.hidden = true;
+          editButton.hidden = false;
+          editButton.setAttribute("aria-expanded", "false");
+        });
+        editForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          saveButton.disabled = true;
+          try {
+            const snapshot = await bridge.updateMemory({
+              id: record.id,
+              tier: persistentTier,
+              content: contentInput.value,
+              kind: kindSelect.value as EditableMemoryKind,
+              importance: Number(importanceInput.value),
+            });
+            input("#memory-search-input").value = "";
+            renderSnapshot(snapshot);
+            showToast(`已修正 ${persistentTier} 记忆，来源和历史标识保持不变`);
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : "记忆修正失败", 5000);
+            saveButton.disabled = false;
+          }
+        });
+        deleteButton.addEventListener("click", async () => {
+          const preview = (record.summary || record.content).slice(0, 40);
+          if (!window.confirm(`确定删除 ${persistentTier} 记忆“${preview}”吗？此操作会立即写入本地记忆库。`)) return;
+          deleteButton.disabled = true;
+          try {
+            const snapshot = await bridge.deleteMemory({ id: record.id, tier: persistentTier });
+            input("#memory-search-input").value = "";
+            renderSnapshot(snapshot);
+            showToast(`已删除 ${persistentTier} 记忆`);
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : "记忆删除失败", 5000);
+            deleteButton.disabled = false;
+          }
+        });
+
+        card.append(actions, editForm);
+      }
       list.append(card);
     }
   }
 
   async function refreshMemory(): Promise<void> {
     const snapshot = await bridge.getMemory();
-    renderCounts(snapshot);
-    renderMemory([...snapshot.l3, ...snapshot.l2, ...snapshot.l1].reverse());
+    renderSnapshot(snapshot);
   }
 
   function openView(view: ControlPanelView): void {
@@ -687,8 +902,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
   must<HTMLButtonElement>("#heartbeat-button").addEventListener("click", async () => {
     try {
       const result = await bridge.runHeartbeat();
-      renderCounts(result.snapshot);
-      renderMemory([...result.snapshot.l3, ...result.snapshot.l2, ...result.snapshot.l1].reverse());
+      renderSnapshot(result.snapshot);
       renderPersonality(result.personality);
       showToast(`心跳完成：L2 +${result.event.movedToL2}，L3 +${result.event.consolidatedToL3}，人格证据 +${result.event.personalityUpdates ?? 0}`);
     } catch (error) {
@@ -703,8 +917,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     try {
       const snapshot = await bridge.remember(text);
       field.value = "";
-      renderCounts(snapshot);
-      renderMemory([...snapshot.l3, ...snapshot.l2, ...snapshot.l1].reverse());
+      renderSnapshot(snapshot);
       showToast("已放入 L2 海马体待整理区");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "保存失败");
@@ -715,7 +928,9 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     const query = input("#memory-search-input").value.trim();
     if (!query) return refreshMemory();
     try {
-      renderMemory(await bridge.searchMemory(query));
+      const results = await bridge.searchMemory(query);
+      renderMemory(results);
+      showToast(`找到 ${results.length} 条记忆，已显示召回依据`);
     } catch (error) {
       showToast(error instanceof Error ? error.message : "搜索失败");
     }

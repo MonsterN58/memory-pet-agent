@@ -1,4 +1,4 @@
-import type { LongTermCandidate, MemoryRecord } from "../../common/types";
+import type { LongTermCandidate, MemoryRecord, MemoryScoreBreakdown } from "../../common/types";
 
 const CJK = /[\u3400-\u9fff]/;
 
@@ -30,16 +30,32 @@ export function jaccard(left: string, right: string): number {
   return intersection / (a.size + b.size - intersection);
 }
 
-export function scoreMemory(memory: MemoryRecord, query: string, now = Date.now()): number {
+export function scoreMemoryBreakdown(
+  memory: MemoryRecord,
+  query: string,
+  now = Date.now(),
+): MemoryScoreBreakdown {
   const queryTokens = tokenize(query);
   const memoryTokens = tokenize(`${memory.summary} ${memory.content} ${memory.tags.join(" ")}`);
   let matches = 0;
   for (const token of queryTokens) if (memoryTokens.has(token)) matches += 1;
   const relevance = queryTokens.size > 0 ? matches / queryTokens.size : 0;
   const ageDays = Math.max(0, now - Date.parse(memory.updatedAt)) / 86_400_000;
-  const recency = Math.exp(-ageDays / 30);
-  const frequency = Math.min(1, Math.log2(memory.accessCount + 1) / 5);
-  return relevance * 5 + memory.importance * 1.7 + recency * 0.8 + frequency * 0.5;
+  const textRelevance = relevance * 5;
+  const importance = memory.importance * 1.7;
+  const recency = Math.exp(-ageDays / 30) * 0.8;
+  const frequency = Math.min(1, Math.log2(memory.accessCount + 1) / 5) * 0.5;
+  return {
+    textRelevance,
+    importance,
+    recency,
+    frequency,
+    total: textRelevance + importance + recency + frequency,
+  };
+}
+
+export function scoreMemory(memory: MemoryRecord, query: string, now = Date.now()): number {
+  return scoreMemoryBreakdown(memory, query, now).total;
 }
 
 export function summarizeText(value: string, maxLength = 100): string {

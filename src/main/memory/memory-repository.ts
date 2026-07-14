@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { HeartbeatEvent, LongTermCandidate, MemoryRecord } from "../../common/types";
-import { clamp, jaccard, scoreMemory, summarizeText } from "./memory-utils";
+import type {
+  HeartbeatEvent,
+  LongTermCandidate,
+  MemoryDeleteInput,
+  MemoryRecord,
+  MemorySearchResult,
+  MemoryUpdateInput,
+} from "../../common/types";
+import { clamp, jaccard, scoreMemoryBreakdown, summarizeText } from "./memory-utils";
 
 interface MemoryMeta {
   lastInteractionAt?: string;
@@ -86,6 +93,27 @@ export class MemoryRepository {
     await this.persist();
   }
 
+  async updateMemory(input: MemoryUpdateInput): Promise<MemoryRecord> {
+    const records = input.tier === "L2" ? this.database.l2 : this.database.l3;
+    const record = records.find((item) => item.id === input.id);
+    if (!record) throw new Error("没有找到要修改的记忆");
+    record.content = input.content;
+    record.summary = summarizeText(input.content);
+    record.kind = input.kind;
+    record.importance = clamp(input.importance);
+    record.updatedAt = new Date().toISOString();
+    await this.persist();
+    return clone(record);
+  }
+
+  async deleteMemory(input: MemoryDeleteInput): Promise<void> {
+    const records = input.tier === "L2" ? this.database.l2 : this.database.l3;
+    const index = records.findIndex((item) => item.id === input.id);
+    if (index < 0) throw new Error("没有找到要删除的记忆");
+    records.splice(index, 1);
+    await this.persist();
+  }
+
   async consumeL2(sourceIds: string[], candidates: LongTermCandidate[]): Promise<number> {
     const sourceIdSet = new Set(sourceIds);
     const now = new Date().toISOString();
@@ -125,11 +153,11 @@ export class MemoryRepository {
     return changed;
   }
 
-  async retrieve(query: string, limit = 6): Promise<MemoryRecord[]> {
+  async retrieveWithScores(query: string, limit = 6): Promise<MemorySearchResult[]> {
     const now = Date.now();
     const ranked = [...this.database.l3, ...this.database.l2]
-      .map((memory) => ({ memory, score: scoreMemory(memory, query, now) }))
-      .sort((a, b) => b.score - a.score)
+      .map((memory) => ({ memory, score: scoreMemoryBreakdown(memory, query, now) }))
+      .sort((a, b) => b.score.total - a.score.total)
       .slice(0, limit);
     const accessedAt = new Date(now).toISOString();
     for (const { memory } of ranked) {
@@ -137,7 +165,11 @@ export class MemoryRepository {
       memory.accessedAt = accessedAt;
     }
     if (ranked.length > 0) await this.persist();
-    return clone(ranked.map(({ memory }) => memory));
+    return clone(ranked);
+  }
+
+  async retrieve(query: string, limit = 6): Promise<MemoryRecord[]> {
+    return (await this.retrieveWithScores(query, limit)).map(({ memory }) => memory);
   }
 
   async recordHeartbeat(event: HeartbeatEvent): Promise<void> {

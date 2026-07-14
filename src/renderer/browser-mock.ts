@@ -43,7 +43,11 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     dataDirectory: "本地 UI 预览模式",
   };
   const memory: MemorySnapshot = {
-    l1: [],
+    l1: [{
+      ...sampleMemory("L1", "dialogue", "刚刚提到想让长期记忆更容易纠错。", 0.66),
+      tier: "L1",
+      role: "user",
+    }],
     l2: [sampleMemory("L2", "episode", "用户正在设计一个有长期记忆的桌宠 Agent。", 0.82)],
     l3: [sampleMemory("L3", "preference", "用户偏好本地优先、可以主动聊天的桌宠。", 0.9)],
     recentHeartbeats: [],
@@ -91,9 +95,38 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
       return structuredClone(memory);
     },
     async searchMemory(query) {
-      return [...memory.l3, ...memory.l2].filter((item) => item.content.includes(query));
+      return [...memory.l3, ...memory.l2]
+        .filter((item) => item.content.includes(query))
+        .map((item) => ({
+          memory: structuredClone(item),
+          score: {
+            textRelevance: 5,
+            importance: item.importance * 1.7,
+            recency: 0.8,
+            frequency: 0.1,
+            total: 5 + item.importance * 1.7 + 0.8 + 0.1,
+          },
+        }));
     },
     async getMemory() {
+      return structuredClone(memory);
+    },
+    async updateMemory(update) {
+      const records = update.tier === "L2" ? memory.l2 : memory.l3;
+      const record = records.find((item) => item.id === update.id);
+      if (!record) throw new Error("没有找到要修改的记忆");
+      record.content = update.content;
+      record.summary = update.content;
+      record.kind = update.kind;
+      record.importance = update.importance;
+      record.updatedAt = new Date().toISOString();
+      return structuredClone(memory);
+    },
+    async deleteMemory(target) {
+      const records = target.tier === "L2" ? memory.l2 : memory.l3;
+      const index = records.findIndex((item) => item.id === target.id);
+      if (index < 0) throw new Error("没有找到要删除的记忆");
+      records.splice(index, 1);
       return structuredClone(memory);
     },
     async getPersonality() { return structuredClone(personalityProfile); },

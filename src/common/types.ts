@@ -1,5 +1,7 @@
 export type MemoryTier = "L1" | "L2" | "L3";
 export type MemoryKind = "dialogue" | "episode" | "fact" | "preference" | "reflection";
+export type PersistentMemoryTier = Exclude<MemoryTier, "L1">;
+export type EditableMemoryKind = Exclude<MemoryKind, "dialogue">;
 export type SpeakerRole = "user" | "assistant";
 export type PetEmotion = "idle" | "happy" | "thinking" | "curious" | "listening" | "speaking" | "sleepy";
 export type PetLocomotion = "idle" | "walk-left" | "walk-right" | "dragged" | "falling";
@@ -47,6 +49,32 @@ export interface MemoryRecord {
   accessedAt: string;
   accessCount: number;
   sourceIds: string[];
+}
+
+export interface MemoryUpdateInput {
+  id: string;
+  tier: PersistentMemoryTier;
+  content: string;
+  kind: EditableMemoryKind;
+  importance: number;
+}
+
+export interface MemoryDeleteInput {
+  id: string;
+  tier: PersistentMemoryTier;
+}
+
+export interface MemoryScoreBreakdown {
+  textRelevance: number;
+  importance: number;
+  recency: number;
+  frequency: number;
+  total: number;
+}
+
+export interface MemorySearchResult {
+  memory: MemoryRecord;
+  score: MemoryScoreBreakdown;
 }
 
 export interface InstantMemory extends MemoryRecord {
@@ -223,8 +251,10 @@ export interface PetAgentBridge {
   bootstrap(): Promise<BootstrapState>;
   chat(text: string): Promise<ChatResponse>;
   remember(text: string): Promise<MemorySnapshot>;
-  searchMemory(query: string): Promise<MemoryRecord[]>;
+  searchMemory(query: string): Promise<MemorySearchResult[]>;
   getMemory(): Promise<MemorySnapshot>;
+  updateMemory(input: MemoryUpdateInput): Promise<MemorySnapshot>;
+  deleteMemory(input: MemoryDeleteInput): Promise<MemorySnapshot>;
   getPersonality(): Promise<PersonalityProfile>;
   resetPersonality(): Promise<PersonalityProfile>;
   runHeartbeat(): Promise<HeartbeatResult>;

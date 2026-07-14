@@ -48,27 +48,28 @@
 | --- | --- | --- | --- |
 | Electron 桌面壳 | 已完成 MVP | 纯宠物透明窗口、字幕式对话坞/按需命令条、鼠标拖拽/重力落地、失焦漫游、原生右键菜单、独立控制面板、托盘、单实例 | 安装包签名、自动更新、跨屏漫游策略 |
 | L1 记忆 | 已完成 MVP | 进程内滚动上下文、数量/时间阈值、重要度估算 | 崩溃恢复、会话边界策略 |
-| L2 记忆 | 已完成 MVP | 对话事件化、本地持久化、显式记忆入口 | 更细的冲突/撤销/人工审核机制 |
-| L3 记忆 | 已完成 MVP | 事实/偏好/事件/反思、相似合并、来源追踪 | 编辑删除 UI、遗忘策略、向量检索 |
-| 检索 | 已完成基础版 | 中文单字/双字词法相关度、重要度、时间衰减、访问强化 | Embedding、混合检索、质量评测集 |
+| L2 记忆 | 已完成增强版 | 对话事件化、本地持久化、显式记忆入口、详情/来源、原位修正与删除 | 修订历史、冲突/撤销和人工审核机制 |
+| L3 记忆 | 已完成增强版 | 事实/偏好/事件/反思、相似合并、来源追踪、详情/修正/删除 | 遗忘策略、修订历史、向量检索 |
+| 检索 | 已完成基础版 | 中文单字/双字词法相关度、重要度、时间衰减、访问强化、召回评分拆解 | Embedding、混合检索、质量评测集 |
 | 心跳 | 已完成 MVP | startup/scheduled/manual、迁移、整理、反思、审计记录 | 自适应频率、策略可视化、长期评测 |
 | 主动聊天 | 已完成 MVP | 空闲阈值、冷却、安静时段、每日上限 | 情境评分、用户反馈学习 |
 | 人格成长 | 已完成基础版 | 初始空白、六维连续状态、逐轮本地证据、心跳模型/离线复盘、置信度与相反反馈、独立持久化、设置页展示与重置 | 更丰富的隐式反馈、人格版本历史、用户纠错单项证据 |
 | 大模型 | 已完成基础版 | OpenAI 兼容端点、超时、离线降级、记忆提示隔离 | 流式输出、多供应商适配、重试/限流 |
 | 语音 | 已完成稳定本地版 | sherpa-onnx 1.13.4 + 14M 中文 Zipformer、麦克风 PCM/VAD/16k 下采样、独立识别 worker、模型状态/校验/下载脚本、默认系统本机朗读、可选独立云端 TTS 与本机回退 | 部分识别结果、本地神经 TTS、真实音频驱动口型时序 |
 | 2D 模型 | Live2D 导入已完成 | Hiyori/Mao/Wanko 官方样例、Cubism 3/4/5 model3 导入、原子热切换/失败回退、全局鼠标视线、轻微待机、逐模型动作/表情、可见网格自动取景、口型/眨眼/物理 | 用户缩放、expression 选择、历史模型切换/删除 UI |
-| 测试与安全 | 基础完成 | 27 个核心测试、类型检查、Electron smoke、三模型热切换 smoke、CSP、IPC 白名单、人格空白/成长/冲突/去重、本地 ASR 输入边界、本地/云端 TTS 隔离、模型资源边界、npm 0 漏洞 | 麦克风硬件 E2E、更多数据迁移测试、安装包测试 |
+| 测试与安全 | 基础完成 | 37 个核心测试、类型检查、Electron smoke、三模型热切换 smoke、CSP、IPC 白名单、记忆修改输入边界/持久化/并发写/过期整理隔离/评分解释、人格空白/成长/冲突/去重、本地 ASR 输入边界、本地/云端 TTS 隔离、模型资源边界、npm 0 漏洞 | 麦克风硬件 E2E、更多数据迁移测试、安装包测试 |
 
 最近一次已验证：
 
 - `npm run typecheck` 通过。
-- `npm test`：27/27 通过，包含三级记忆/设置迁移、人格成长/修正/心跳去重、本地 ASR PCM 输入边界/模型缺失状态/16k 下采样、Chromium 兼容模式隔离、本机 TTS 不访问云端、云端失败回退、聊天/TTS 端点隔离、TTS 鉴权/错误/12MB 上限，以及 Live2D 资源与导入边界。
+- `npm test`：37/37 通过，包含三级记忆迁移、L2/L3 修正与删除、磁盘重载、并发写队列、心跳过期提炼隔离、修改输入边界、可解释检索评分、设置迁移、人格成长/修正/心跳去重、本地 ASR PCM 输入边界/模型缺失状态/16k 下采样、Chromium 兼容模式隔离、本机 TTS 不访问云端、云端失败回退、聊天/TTS 端点隔离、TTS 鉴权/错误/12MB 上限，以及 Live2D 资源与导入边界。
 - `npm run build` 通过。
 - `npm run smoke` 在 Electron 43.1.0 下输出 `ELECTRON_SMOKE_TEST_READY`。
 - `npm run smoke:voice` 在真实 Electron 主进程与 worker 下输出 `ELECTRON_LOCAL_ASR_SMOKE_READY 5612ms 对我做了介绍那么我想说的是大家如果对我的研究感兴趣`。
 - `npm run smoke:model-switch` 已在真实 Electron WebGL 下依次输出 Hiyori、Mao、Wanko、再次 Hiyori 的 `LIVE2D_MODEL_READY` 和最终 `ELECTRON_MODEL_SWITCH_TEST_READY`，无销毁警告或 Cubism 断言。
 - `npm audit`：0 vulnerabilities。
 - 390×700 视口下已检查聊天、三级记忆和设置面板。
+- 390×700 生产 Renderer 下已检查 L1 只读、L2/L3 详情/来源/修正/删除入口和窄屏编辑表单，控制台 0 错误；验收图为 `output/playwright/memory-control-list.png` 与 `output/playwright/memory-control-edit.png`。
 - 本地 ASR 模型已用固定 SHA-256 校验；独立 worker 在 Node 24 下用官方 5.6 秒中文 WAV 真实识别成功，模型目录为项目 `resources/voice/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/`，运行模型约 29.5 MiB。
 - 新版设置页已在本地浏览器预览中验证空白人格卡片、项目内离线识别状态、本机朗读默认值、可选独立云端 TTS、移动设置和完整可访问结构，保存后控制台无错误。
 - 320×460 视口下已检查纯宠物本体、鼠标拖起和松手下落状态；验收图在 `output/playwright/drag-ready.png`、`pet-dragged.png`、`pet-falling.png`。
@@ -132,7 +133,8 @@ src/main/
     openai-compatible-tts.ts  /audio/speech TTS 客户端、鉴权、超时与音频响应边界
   memory/
     memory-engine.ts       L1 缓冲、L1→L2、L2→L3、上下文检索
-    memory-repository.ts   JSON 数据库、串行写入、损坏隔离、L3 合并
+    memory-input.ts        L2/L3 修改与删除请求的 UUID、层级、内容、类型和重要度校验
+    memory-repository.ts   JSON 数据库、串行写入、损坏隔离、L2/L3 管理、L3 合并和评分检索
     memory-utils.ts        分词、相似度、检索评分、去重
   personality/
     personality-engine.ts  六维证据分析、冲突修正、成长阶段和模型行为上下文
@@ -140,7 +142,7 @@ src/main/
 
 src/renderer/
   index.html / styles.css  桌宠、聊天、记忆和设置 UI
-  renderer.ts              UI 状态与 bridge 调用
+  renderer.ts              UI 状态与 bridge 调用、记忆详情/来源/修正/删除/召回解释
   voice-service.ts         麦克风 PCM/VAD/下采样、兼容 Web Speech、本机朗读、云端 TTS 回退
   model-adapter.ts         2D 模型稳定接口
   live2d-pet-adapter.ts    Pixi/Cubism 渲染、motion、口型、物理、自动取景和兼容封装
@@ -239,8 +241,8 @@ L3 事实 / 偏好 / 事件 / 反思（本地 JSON，去重合并）
 
 建议按价值和风险排序：
 
-1. **记忆可控性**：增加 L2/L3 详情、编辑、删除、纠错和“为何召回”界面；先解决长期记忆错误不可修正的问题。
-2. **记忆质量评测**：建立包含偏好更新、事实冲突、跨天跟进、提示注入的测试集，再考虑 Embedding/SQLite。
+1. **记忆质量评测**：建立包含偏好更新、事实冲突、跨天跟进、提示注入和用户纠错的测试集，再考虑 Embedding/SQLite。
+2. **记忆审计增强**：在现有原位修正与删除之上增加修订历史、撤销、冲突标记和人工审核策略。
 3. **流式对话**：扩展 provider 与 IPC 为增量事件，同时保留本地降级和取消能力。
 4. **模型管理体验**：增加导入模型缩放、皮肤选择、历史模型切换与删除，同时保留内置模型回退和本地资源边界。
 5. **离线语音增强**：在已落地的 sherpa-onnx worker 上增加流式 IPC 与部分识别结果，并评估本地神经 TTS、真实音频口型时序和模型版本/删除 UI。
@@ -251,6 +253,7 @@ L3 事实 / 偏好 / 事件 / 反思（本地 JSON，去重合并）
 ## 9. 已知限制与注意事项
 
 - 当前 L1 在应用退出后丢失；L2/L3 才持久化。
+- 当前 L2/L3 修正是保留来源字段的原位覆盖，不保存历史版本；删除也没有撤销入口。
 - JSON Repository 适合 MVP 数据量，不适合超大记忆库和复杂并发查询。
 - 中文检索是轻量词法算法，没有语义向量；同义表达召回能力有限。
 - 本地回复是保障可用性的规则模板，不等同于离线大模型。

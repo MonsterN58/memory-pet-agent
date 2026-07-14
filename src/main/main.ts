@@ -28,6 +28,7 @@ import { DesktopMovementController } from "./desktop-movement-controller";
 import { HeartbeatService } from "./heartbeat-service";
 import { LocalAsrService, LOCAL_ASR_MODEL_ID } from "./local-asr-service";
 import { MemoryEngine } from "./memory/memory-engine";
+import { sanitizeMemoryTarget, sanitizeMemoryUpdate } from "./memory/memory-input";
 import { MemoryRepository } from "./memory/memory-repository";
 import { ModelStore } from "./model-store";
 import { OpenAICompatibleTtsClient } from "./provider/openai-compatible-tts";
@@ -438,6 +439,18 @@ function registerIpc(): void {
   });
   ipcMain.handle("memory:search", (_event, value: unknown) => memoryEngine.search(sanitizeText(value, 500), 20));
   ipcMain.handle("memory:get", () => memoryEngine.snapshot());
+  ipcMain.handle("memory:update", (event, value: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("只能从记忆管理窗口修改记忆");
+    }
+    return memoryEngine.updateMemory(sanitizeMemoryUpdate(value));
+  });
+  ipcMain.handle("memory:delete", (event, value: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("只能从记忆管理窗口删除记忆");
+    }
+    return memoryEngine.deleteMemory(sanitizeMemoryTarget(value));
+  });
   ipcMain.handle("personality:get", () => personalityEngine.getProfile());
   ipcMain.handle("personality:reset", async (event) => {
     if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
