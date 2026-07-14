@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,6 +26,43 @@ function persistentRecord(tier: PersistentMemoryTier, content: string): MemoryRe
     sourceIds: [randomUUID()],
   };
 }
+
+test("初始化把 v1 L3 迁移为持久化的 v2 当前版本且重载幂等", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "memory-pet-test-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = join(directory, "memory-store.json");
+  const legacy = persistentRecord("L3", "用户住在南京");
+  await writeFile(filePath, JSON.stringify({
+    version: 1,
+    l2: [],
+    l3: [legacy],
+    heartbeatEvents: [],
+    meta: {},
+  }), "utf8");
+
+  const repository = new MemoryRepository(directory);
+  await repository.initialize();
+  const migrated = repository.getL3()[0]!;
+
+  assert.equal(migrated.topicKey, `legacy:${legacy.id}`);
+  assert.equal(migrated.revision, 1);
+  assert.equal(migrated.versionState, "current");
+  assert.equal(migrated.validFrom, legacy.createdAt);
+  assert.equal(migrated.validTo, undefined);
+  assert.equal(migrated.supersedesId, undefined);
+  assert.equal(migrated.supersededById, undefined);
+
+  const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+    version: number;
+    l3: MemoryRecord[];
+  };
+  assert.equal(persisted.version, 2);
+  assert.deepEqual(persisted.l3[0], migrated);
+
+  const reloaded = new MemoryRepository(directory);
+  await reloaded.initialize();
+  assert.deepEqual(reloaded.getL3()[0], migrated);
+});
 
 test("心跳把 L1 对话迁移到 L2 并整理为 L3", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "memory-pet-test-"));
@@ -121,7 +158,7 @@ test("L2 修正保留来源和不可变字段并持久化", async (context) => {
   assert.deepEqual(reloaded.getL2()[0], updated);
 });
 
-test("L3 修正持久化且不存在的记忆返回明确错误", async (context) => {
+test("L3 修正追加新版本并持久化完整双向链接", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "memory-pet-test-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const repository = new MemoryRepository(directory);
@@ -145,17 +182,144 @@ test("L3 修正持久化且不存在的记忆返回明确错误", async (context
     importance: 0.92,
   });
 
-  assert.equal(updated.content, "用户喜欢茉莉花茶");
-  assert.deepEqual(updated.sourceIds, [sourceId]);
+  const records = repository.getL3();
+  assert.equal(records.length, 2);
+  const superseded = records.find((record) => record.id === original.id);
+  const current = records.find((record) => record.id === updated.id);
+  assert(superseded);
+  assert(current);
+  assert.notEqual(current.id, superseded.id);
+  assert.equal(superseded.content, "用户喜欢红茶");
+  assert.equal(superseded.versionState, "superseded");
+  assert.equal(superseded.revision, 1);
+  assert.equal(superseded.supersededById, current.id);
+  assert.equal(superseded.validTo, current.validFrom);
+  assert.equal(current.content, "用户喜欢茉莉花茶");
+  assert.equal(current.versionState, "current");
+  assert.equal(current.revision, 2);
+  assert.equal(current.supersedesId, superseded.id);
+  assert.equal(current.validTo, undefined);
+  assert.equal(current.topicKey, superseded.topicKey);
+  assert.deepEqual(current.sourceIds, [sourceId]);
+  assert.deepEqual(updated, current);
+
   const reloaded = new MemoryRepository(directory);
   await reloaded.initialize();
-  assert.equal(reloaded.getL3()[0]?.content, "用户喜欢茉莉花茶");
+  assert.deepEqual(reloaded.getL3(), records);
   await assert.rejects(
     repository.updateMemory({
       id: randomUUID(), tier: "L3", content: "不存在", kind: "fact", importance: 0.5,
     }),
     /没有找到要修改的记忆/,
   );
+});
+
+test("L3 连续修正形成 A→B→C 版本链并在磁盘重载后保留", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "memory-pet-test-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const repository = new MemoryRepository(directory);
+  await repository.initialize();
+  await repository.consumeL2([], [{
+    kind: "fact",
+    content: "用户住在南京",
+    summary: "用户住在南京",
+    importance: 0.8,
+    tags: ["residence"],
+    sourceIds: [randomUUID()],
+  }]);
+  const first = repository.getL3()[0]!;
+  const second = await repository.updateMemory({
+    id: first.id,
+    tier: "L3",
+    content: "用户住在杭州",
+    kind: "fact",
+    importance: 0.85,
+  });
+  const third = await repository.updateMemory({
+    id: second.id,
+    tier: "L3",
+    content: "用户住在苏州",
+    kind: "fact",
+    importance: 0.9,
+  });
+
+  const reloaded = new MemoryRepository(directory);
+  await reloaded.initialize();
+  const chain = reloaded.getL3()
+    .filter((record) => record.topicKey === first.topicKey)
+    .sort((left, right) => left.revision - right.revision);
+  assert.equal(chain.length, 3);
+  assert.deepEqual(chain.map((record) => record.revision), [1, 2, 3]);
+  const [revision1, revision2, revision3] = chain;
+  assert(revision1 && revision2 && revision3);
+  assert.deepEqual(chain.map((record) => record.versionState), ["superseded", "superseded", "current"]);
+  assert.equal(revision1.supersedesId, undefined);
+  assert.equal(revision1.supersededById, revision2.id);
+  assert.equal(revision1.validTo, revision2.validFrom);
+  assert.equal(revision2.supersedesId, revision1.id);
+  assert.equal(revision2.supersededById, revision3.id);
+  assert.equal(revision2.validTo, revision3.validFrom);
+  assert.equal(revision3.id, third.id);
+  assert.equal(revision3.supersedesId, revision2.id);
+  assert.equal(revision3.supersededById, undefined);
+  assert.equal(revision3.validTo, undefined);
+});
+
+test("初始化会完成 v2 中断的 transition 并持久化 A→B", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "memory-pet-test-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const filePath = join(directory, "memory-store.json");
+  const firstAt = "2026-01-01T00:00:00.000Z";
+  const secondAt = "2026-02-01T00:00:00.000Z";
+  const topicKey = "fact:residence";
+  const original: MemoryRecord = {
+    ...persistentRecord("L3", "用户住在南京"),
+    createdAt: firstAt,
+    updatedAt: firstAt,
+    accessedAt: firstAt,
+    topicKey,
+    revision: 1,
+    versionState: "current",
+    validFrom: firstAt,
+  };
+  const next: MemoryRecord = {
+    ...persistentRecord("L3", "用户住在杭州"),
+    createdAt: secondAt,
+    updatedAt: secondAt,
+    accessedAt: secondAt,
+    topicKey,
+    revision: 2,
+    versionState: "transition",
+    supersedesId: original.id,
+    validFrom: secondAt,
+  };
+  await writeFile(filePath, JSON.stringify({
+    version: 2,
+    l2: [],
+    l3: [original, next],
+    heartbeatEvents: [],
+    meta: {},
+  }), "utf8");
+
+  const repository = new MemoryRepository(directory);
+  await repository.initialize();
+  const repairedOriginal = repository.getL3().find((record) => record.id === original.id);
+  const repairedNext = repository.getL3().find((record) => record.id === next.id);
+  assert(repairedOriginal && repairedNext);
+  assert.equal(repairedOriginal.versionState, "superseded");
+  assert.equal(repairedOriginal.supersededById, repairedNext.id);
+  assert.equal(repairedOriginal.validTo, repairedNext.validFrom);
+  assert.equal(repairedNext.versionState, "current");
+  assert.equal(repairedNext.supersedesId, repairedOriginal.id);
+  assert.equal(repairedNext.supersededById, undefined);
+  assert.equal(repairedNext.validTo, undefined);
+
+  const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+    version: number;
+    l3: MemoryRecord[];
+  };
+  assert.equal(persisted.version, 2);
+  assert.deepEqual(persisted.l3, repository.getL3());
 });
 
 test("L2 和 L3 删除后重载仍不存在", async (context) => {

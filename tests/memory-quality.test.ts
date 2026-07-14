@@ -16,8 +16,18 @@ import {
 } from "./fixtures/memory-quality-cases";
 
 const DAY_MS = 86_400_000;
+type LegacyMemoryRecord = Omit<
+  MemoryRecord,
+  | "topicKey"
+  | "revision"
+  | "versionState"
+  | "supersedesId"
+  | "supersededById"
+  | "validFrom"
+  | "validTo"
+>;
 
-function memoryRecord(fixture: MemoryFixture, index: number, now: number): MemoryRecord {
+function memoryRecord(fixture: MemoryFixture, index: number, now: number): LegacyMemoryRecord {
   const timestamp = new Date(now - fixture.ageDays * DAY_MS).toISOString();
   return {
     id: randomUUID(),
@@ -131,12 +141,12 @@ test("提示注入内容不进入相关记忆结果", async (context) => {
   }
 });
 
-test("用户纠错后只召回新值", async (context) => {
+test("用户纠错后面板保留旧值审计且当前上下文只召回新值", async (context) => {
   for (const fixtureCase of userCorrectionCases) {
     const repository = await repositoryFor(context, [fixtureCase.original]);
     const original = repository.getL3()[0];
     assert(original, fixtureCase.name);
-    await repository.updateMemory({
+    const corrected = await repository.updateMemory({
       id: original.id,
       tier: "L3",
       content: fixtureCase.correctedContent,
@@ -150,14 +160,117 @@ test("用户纠错后只召回新值", async (context) => {
       [fixtureCase.correctedContent],
       fixtureCase.name,
     );
+    assert.deepEqual(correctedResults.map(({ memory }) => memory.id), [corrected.id], fixtureCase.name);
 
     const obsoleteResults = await repository.retrieveWithScores(fixtureCase.obsoleteQuery, 1);
     assert.deepEqual(
       obsoleteResults.map(({ memory }) => memory.content),
-      [],
+      [fixtureCase.original.content],
       fixtureCase.name,
     );
+    assert.deepEqual(obsoleteResults.map(({ memory }) => memory.id), [original.id], fixtureCase.name);
+    assert.equal(obsoleteResults[0]?.memory.versionState, "superseded", fixtureCase.name);
+
+    const obsoleteContext = await repository.retrieveForContext(fixtureCase.obsoleteQuery, 1);
+    assert.deepEqual(obsoleteContext, [], fixtureCase.name);
   }
+});
+
+test("版本状态门控当前、历史和比较检索且 transition 永不计入访问", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "memory-quality-test-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const firstAt = "2026-01-01T00:00:00.000Z";
+  const secondAt = "2026-02-01T00:00:00.000Z";
+  const thirdAt = "2026-03-01T00:00:00.000Z";
+  const topicKey = "fact:residence";
+  const supersededId = randomUUID();
+  const currentId = randomUUID();
+  const transitionId = randomUUID();
+  const missingPredecessorId = randomUUID();
+  const superseded: MemoryRecord = {
+    id: supersededId,
+    tier: "L3",
+    kind: "fact",
+    content: "用户住在南京",
+    summary: "用户住在南京",
+    importance: 0.8,
+    tags: ["residence"],
+    createdAt: firstAt,
+    updatedAt: firstAt,
+    accessedAt: firstAt,
+    accessCount: 0,
+    sourceIds: ["residence-source"],
+    topicKey,
+    revision: 1,
+    versionState: "superseded",
+    supersededById: currentId,
+    validFrom: firstAt,
+    validTo: secondAt,
+  };
+  const current: MemoryRecord = {
+    id: currentId,
+    tier: "L3",
+    kind: "fact",
+    content: "用户住在杭州",
+    summary: "用户住在杭州",
+    importance: 0.8,
+    tags: ["residence"],
+    createdAt: secondAt,
+    updatedAt: secondAt,
+    accessedAt: secondAt,
+    accessCount: 0,
+    sourceIds: ["residence-source"],
+    topicKey,
+    revision: 2,
+    versionState: "current",
+    supersedesId: supersededId,
+    validFrom: secondAt,
+  };
+  const transition: MemoryRecord = {
+    id: transitionId,
+    tier: "L3",
+    kind: "fact",
+    content: "用户住在苏州",
+    summary: "用户住在苏州",
+    importance: 0.8,
+    tags: ["residence"],
+    createdAt: thirdAt,
+    updatedAt: thirdAt,
+    accessedAt: thirdAt,
+    accessCount: 0,
+    sourceIds: ["residence-source"],
+    topicKey: "fact:pending-residence",
+    revision: 2,
+    versionState: "transition",
+    supersedesId: missingPredecessorId,
+    validFrom: thirdAt,
+  };
+  await writeFile(join(directory, "memory-store.json"), JSON.stringify({
+    version: 2,
+    l2: [],
+    l3: [superseded, current, transition],
+    heartbeatEvents: [],
+    meta: {},
+  }), "utf8");
+  const repository = new MemoryRepository(directory);
+  await repository.initialize();
+
+  const currentResults = await repository.retrieveForContext("用户住哪里", 3);
+  assert.deepEqual(currentResults.map((memory) => memory.id), [currentId]);
+
+  const historicalResults = await repository.retrieveForContext("以前用户住哪里", 3);
+  assert.deepEqual(historicalResults.map((memory) => memory.id), [supersededId]);
+
+  const comparisonResults = await repository.retrieveForContext("用户住哪里，前后有什么变化", 3);
+  assert.deepEqual(
+    comparisonResults.map((memory) => memory.id).sort(),
+    [currentId, supersededId].sort(),
+  );
+
+  const accessCounts = new Map(repository.getL3().map((memory) => [memory.id, memory.accessCount]));
+  assert.equal(accessCounts.get(currentId), 2);
+  assert.equal(accessCounts.get(supersededId), 2);
+  assert.equal(accessCounts.get(transitionId), 0);
 });
 
 test("聊天当前视图排除明确历史偏好和事实", async (context) => {
