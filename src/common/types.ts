@@ -4,7 +4,14 @@ export type PersistentMemoryTier = Exclude<MemoryTier, "L1">;
 export type EditableMemoryKind = Exclude<MemoryKind, "dialogue">;
 export type SpeakerRole = "user" | "assistant";
 export type PetEmotion = "idle" | "happy" | "thinking" | "curious" | "listening" | "speaking" | "sleepy";
-export type PetLocomotion = "idle" | "walk-left" | "walk-right" | "dragged" | "falling";
+export type PetLocomotion = "idle" | "walk-left" | "walk-right" | "dragged" | "falling" | "landing";
+export interface PetMotionFrame {
+  state: PetLocomotion;
+  velocityX: number;
+  velocityY: number;
+  offsetX: number;
+  offsetY: number;
+}
 export type PetAction = "wave" | "jump" | "dance" | "sit" | "sleep" | "surprised";
 export interface PetFocus {
   x: number;
