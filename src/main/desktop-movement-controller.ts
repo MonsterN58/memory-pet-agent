@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from "electron";
 import type { AgentSettings, PetFocus, PetLocomotion } from "../common/types";
+import { normalizeFocus } from "./pet-motion";
 
 type PauseReason = "pointer" | "focus";
 
@@ -206,11 +207,10 @@ export class DesktopMovementController {
     this.lastFocusAt = now;
     const cursor = screen.getCursorScreenPoint();
     const bounds = window.getBounds();
-    const modelHeight = Math.min(330, bounds.height);
-    const focus = {
-      x: this.clamp((cursor.x - (bounds.x + bounds.width / 2)) / Math.max(1, bounds.width / 2), -1, 1),
-      y: this.clamp(((bounds.y + bounds.height - modelHeight / 2) - cursor.y) / Math.max(1, modelHeight / 2), -1, 1),
-    };
+    const focus = normalizeFocus(cursor, {
+      x: bounds.x + bounds.width / 2,
+      y: bounds.y + bounds.height - Math.min(330, bounds.height) / 2,
+    });
     if (
       this.lastFocus
       && Math.abs(focus.x - this.lastFocus.x) < 0.006

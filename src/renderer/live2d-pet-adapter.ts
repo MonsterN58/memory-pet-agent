@@ -9,6 +9,11 @@ import {
   type CubismInternalModel,
 } from "untitled-pixi-live2d-engine/cubism";
 import type { Live2DModelAssetPackage, PetAction, PetEmotion, PetFocus, PetLocomotion } from "../common/types";
+import {
+  advanceFocus,
+  resolveFocusBindings,
+  type FocusBindings,
+} from "./live2d-interaction";
 import type { PetModelAdapter } from "./model-adapter";
 
 let runtimeConfigured = false;
@@ -105,6 +110,30 @@ const MAO_EXPRESSIONS: Record<PetEmotion, number> = {
   sleepy: 2,
 };
 
+interface FocusProfile {
+  eye: number;
+  headX: number;
+  headY: number;
+  headZ: number;
+  body: number;
+  ear: number;
+}
+
+const DEFAULT_FOCUS_PROFILE: FocusProfile = {
+  eye: 0.85,
+  headX: 12,
+  headY: 8,
+  headZ: 3,
+  body: 3.5,
+  ear: 0.25,
+};
+
+const BUNDLED_FOCUS_PROFILES: Record<string, FocusProfile> = {
+  hiyori: { eye: 0.9, headX: 10, headY: 7, headZ: 2.5, body: 3, ear: 0 },
+  mao: { eye: 0.82, headX: 9, headY: 6, headZ: 2, body: 2.5, ear: 0 },
+  wanko: { eye: 0, headX: 18, headY: 12, headZ: 4, body: 6, ear: 0.4 },
+};
+
 /** Cubism 3/4/5 renderer backed by PixiJS 8. Desktop position remains owned by Electron. */
 export class Live2DPetAdapter implements PetModelAdapter {
   readonly id: string;
@@ -121,8 +150,9 @@ export class Live2DPetAdapter implements PetModelAdapter {
   private actionTimer?: number;
   private speakTimer?: number;
   private speechUntil = 0;
-  private pointerListener?: (event: PointerEvent) => void;
   private focus: PetFocus = { x: 0, y: 0 };
+  private appliedFocus: PetFocus = { x: 0, y: 0 };
+  private focusBindings: FocusBindings = {};
 
   constructor(assets: Live2DModelAssetPackage) {
     this.assets = assets;
@@ -174,19 +204,11 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.installTextureUploadCompatibility(model);
     app.stage.addChild(model);
     this.model = model;
-    model.on("beforeModelUpdate", () => this.applyLipSync());
+    this.focusBindings = this.discoverFocusBindings(model);
+    model.on("beforeModelUpdate", () => this.applyFrameParameters());
     this.fitModel();
     this.setFocus(this.focus);
     this.playIdle();
-
-    this.pointerListener = (event) => {
-      const bounds = root.getBoundingClientRect();
-      if (!bounds.width || !bounds.height) return;
-      const x = Math.max(-1, Math.min(1, ((event.clientX - bounds.left) / bounds.width) * 2 - 1));
-      const y = Math.max(-1, Math.min(1, ((event.clientY - bounds.top) / bounds.height) * 2 - 1));
-      this.setFocus({ x, y: -y });
-    };
-    window.addEventListener("pointermove", this.pointerListener, { passive: true });
   }
 
   setState(state: PetEmotion): void {
@@ -206,10 +228,9 @@ export class Live2DPetAdapter implements PetModelAdapter {
 
   setFocus(focus: PetFocus): void {
     this.focus = {
-      x: Math.max(-1, Math.min(1, focus.x)),
-      y: Math.max(-1, Math.min(1, focus.y)),
+      x: Number.isFinite(focus.x) ? Math.max(-1, Math.min(1, focus.x)) : 0,
+      y: Number.isFinite(focus.y) ? Math.max(-1, Math.min(1, focus.y)) : 0,
     };
-    this.model?.focus(this.focus.x, this.focus.y);
   }
 
   playAction(action: PetAction): boolean {
@@ -259,8 +280,6 @@ export class Live2DPetAdapter implements PetModelAdapter {
   destroy(): void {
     if (this.actionTimer) window.clearTimeout(this.actionTimer);
     if (this.speakTimer) window.clearTimeout(this.speakTimer);
-    if (this.pointerListener) window.removeEventListener("pointermove", this.pointerListener);
-    this.pointerListener = undefined;
     const model = this.model;
     model?.stopMotions();
     if (model && this.app) {
@@ -275,6 +294,8 @@ export class Live2DPetAdapter implements PetModelAdapter {
     // can be selected again after its old WebGL context has been released.
     this.app?.destroy({ removeView: true }, { children: true, texture: false, textureSource: false, context: true });
     this.app = undefined;
+    this.focusBindings = {};
+    this.appliedFocus = { x: 0, y: 0 };
     this.root?.remove();
     this.root = undefined;
   }
@@ -381,6 +402,52 @@ export class Live2DPetAdapter implements PetModelAdapter {
     for (const parameter of parameters) {
       internal.coreModel.addParameterValueById(internal.getIdSafe(parameter), value, 1);
     }
+  }
+
+  private discoverFocusBindings(model: Live2DModel<CubismInternalModel>): FocusBindings {
+    const core = model.internalModel.coreModel;
+    const parameterIds: string[] = [];
+    for (let index = 0; index < core.getParameterCount(); index += 1) {
+      parameterIds.push(core.getParameterId(index).getString().s);
+    }
+    return resolveFocusBindings(parameterIds);
+  }
+
+  private applyFrameParameters(): void {
+    this.appliedFocus = advanceFocus(this.appliedFocus, this.focus, 0.16);
+    this.applyFocusParameters();
+    this.applyLipSync();
+  }
+
+  private applyFocusParameters(): void {
+    const { x, y } = this.appliedFocus;
+    const bindings = this.focusBindings;
+    const profile = BUNDLED_FOCUS_PROFILES[this.assets.info.id] ?? DEFAULT_FOCUS_PROFILE;
+    const hasEyePair = bindings.eyeX !== undefined && bindings.eyeY !== undefined;
+    const headMultiplier = hasEyePair ? 1 : 1.35;
+    const bodyMultiplier = hasEyePair ? 1 : 1.45;
+
+    this.addBoundedParameter(bindings.eyeX, x * profile.eye);
+    this.addBoundedParameter(bindings.eyeY, y * profile.eye);
+    this.addBoundedParameter(bindings.angleX, x * profile.headX * headMultiplier);
+    this.addBoundedParameter(bindings.angleY, y * profile.headY * headMultiplier);
+    this.addBoundedParameter(bindings.angleZ, -x * y * profile.headZ * headMultiplier);
+    this.addBoundedParameter(bindings.bodyX, x * profile.body * bodyMultiplier);
+    this.addBoundedParameter(bindings.bodyY, y * profile.body * bodyMultiplier);
+    this.addBoundedParameter(bindings.bodyZ, -x * profile.body * 0.45 * bodyMultiplier);
+    this.addBoundedParameter(bindings.earLeft, (x + y * 0.2) * profile.ear);
+    this.addBoundedParameter(bindings.earRight, (-x + y * 0.2) * profile.ear);
+  }
+
+  private addBoundedParameter(index: number | undefined, value: number): void {
+    const core = this.model?.internalModel.coreModel;
+    if (!core || index === undefined || !Number.isFinite(value)) return;
+    const current = core.getParameterValueByIndex(index);
+    const minimum = core.getParameterMinimumValue(index);
+    const maximum = core.getParameterMaximumValue(index);
+    if (![current, minimum, maximum].every(Number.isFinite) || minimum > maximum) return;
+    const addition = Math.max(minimum - current, Math.min(maximum - current, value));
+    core.addParameterValueByIndex(index, addition, 1);
   }
 
   private installTextureUploadCompatibility(model: Live2DModel<CubismInternalModel>): void {

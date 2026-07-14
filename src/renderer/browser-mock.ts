@@ -233,6 +233,14 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   };
   window.petAgent = bridge;
 
+  window.addEventListener("pointermove", (event) => {
+    const focus = {
+      x: Math.max(-1, Math.min(1, (event.clientX - window.innerWidth / 2) / 640)),
+      y: Math.max(-1, Math.min(1, (window.innerHeight / 2 - event.clientY) / 480)),
+    };
+    focusListeners.forEach((listener) => listener(focus));
+  }, { passive: true });
+
   let previewWalking = false;
   window.setInterval(() => {
     if (previewDragging) return;
