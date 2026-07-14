@@ -44,6 +44,7 @@ const bridge: PetAgentBridge = {
   getLocalSpeechStatus: () => ipcRenderer.invoke("voice:local-status") as Promise<LocalSpeechModelStatus>,
   recognizeLocalSpeech: (audio: LocalSpeechAudio) =>
     ipcRenderer.invoke("voice:recognize-local", audio) as Promise<LocalSpeechRecognitionResult>,
+  cancelLocalSpeechRecognition: () => ipcRenderer.invoke("voice:cancel-local") as Promise<void>,
   showDataDirectory: () => ipcRenderer.invoke("data:show") as Promise<void>,
   minimize: () => ipcRenderer.invoke("window:minimize") as Promise<void>,
   close: () => ipcRenderer.invoke("window:close") as Promise<void>,

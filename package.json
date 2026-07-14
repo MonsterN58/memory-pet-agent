@@ -24,6 +24,7 @@
     "dev": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test --user-data-dir=./output/smoke-data",
     "smoke:voice": "npm run build && electron scripts/local-asr-smoke.cjs",
+    "smoke:voice-ui": "npm run build && electron scripts/local-asr-ui-smoke.cjs",
     "smoke:model-switch": "npm run build && electron . --model-switch-smoke --user-data-dir=./output/model-switch-smoke-data",
     "voice:model:download": "node scripts/download-asr-model.mjs",
     "voice:model:verify": "node scripts/download-asr-model.mjs --verify-only",

@@ -94,6 +94,173 @@ test("麦克风音频会下采样为 16 kHz PCM16 并限制幅度", () => {
   assert.equal(pcm.at(-1), -32_768);
 });
 
+test("本地识别阶段再次点击会清空状态并忽略迟到结果", async () => {
+  const media = installLocalMediaMock();
+  const recognition = deferred<{ text: string; durationMs: number }>();
+  const finals: string[] = [];
+  const interim: string[] = [];
+  const states: Array<{ listening: boolean; error?: string }> = [];
+  let cancelCalls = 0;
+  try {
+    const voice = new VoiceService(
+      () => settings({ recognitionMode: "local" }),
+      async () => { throw new Error("unused"); },
+      () => undefined,
+      () => recognition.promise,
+      async () => { cancelCalls += 1; },
+    );
+    const onState = (listening: boolean, error?: string) => states.push({ listening, error });
+    voice.start((text) => finals.push(text), (text) => interim.push(text), onState);
+    await media.ready();
+    media.emitSpeech();
+    voice.start((text) => finals.push(text), (text) => interim.push(text), onState);
+    assert.match(interim.at(-1) ?? "", /^正在本地识别/);
+
+    voice.start((text) => finals.push(text), (text) => interim.push(text), onState);
+    assert.equal(voice.isListening(), false);
+    assert.equal(interim.at(-1), "");
+    assert.equal(cancelCalls, 1);
+    assert.equal(states.filter((state) => state.listening === false).length, 1);
+
+    recognition.resolve({ text: "迟到结果", durationMs: 900 });
+    await nextTask();
+    assert.deepEqual(finals, []);
+    assert.equal(interim.at(-1), "");
+    assert.equal(states.filter((state) => state.listening === false).length, 1);
+  } finally {
+    media.restore();
+  }
+});
+
+test("本地识别成功先结束监听状态再提交最终文本", async () => {
+  const media = installLocalMediaMock();
+  const recognition = deferred<{ text: string; durationMs: number }>();
+  const events: string[] = [];
+  try {
+    const voice = new VoiceService(
+      () => settings({ recognitionMode: "local" }),
+      async () => { throw new Error("unused"); },
+      () => undefined,
+      () => recognition.promise,
+    );
+    voice.start(
+      (text) => events.push(`final:${text}`),
+      (text) => events.push(`interim:${text}`),
+      (listening, error) => events.push(`state:${listening}:${error ?? ""}`),
+    );
+    await media.ready();
+    media.emitSpeech();
+    voice.start(() => undefined, () => undefined, () => undefined);
+    recognition.resolve({ text: "识别成功", durationMs: 900 });
+    await nextTask();
+    assert.equal(events.filter((event) => event.startsWith("state:false")).length, 1);
+    assert.ok(events.indexOf("state:false:") < events.indexOf("final:识别成功"));
+    assert.equal(events.at(-2), "state:false:");
+    assert.equal(events.at(-1), "final:识别成功");
+  } finally {
+    media.restore();
+  }
+});
+
+test("本地识别空结果和错误都只结束一次", async () => {
+  for (const outcome of ["empty", "error"] as const) {
+    const media = installLocalMediaMock();
+    const recognition = deferred<{ text: string; durationMs: number }>();
+    const finals: string[] = [];
+    const states: Array<{ listening: boolean; error?: string }> = [];
+    try {
+      const voice = new VoiceService(
+        () => settings({ recognitionMode: "local" }),
+        async () => { throw new Error("unused"); },
+        () => undefined,
+        () => recognition.promise,
+      );
+      voice.start(
+        (text) => finals.push(text),
+        () => undefined,
+        (listening, error) => states.push({ listening, error }),
+      );
+      await media.ready();
+      media.emitSpeech();
+      voice.start(() => undefined, () => undefined, () => undefined);
+      if (outcome === "empty") recognition.resolve({ text: "", durationMs: 900 });
+      else recognition.reject(new Error("worker decode failed"));
+      await nextTask();
+      assert.deepEqual(finals, []);
+      const finished = states.filter((state) => state.listening === false);
+      assert.equal(finished.length, 1);
+      assert.match(finished[0]?.error ?? "", outcome === "empty" ? /没有识别到清晰语音/ : /worker decode failed/);
+    } finally {
+      media.restore();
+    }
+  }
+});
+
+test("本地识别 Renderer 看门狗会取消并恢复界面", async () => {
+  const media = installLocalMediaMock();
+  const recognition = deferred<{ text: string; durationMs: number }>();
+  const timers = new ManualTimers();
+  const interim: string[] = [];
+  const states: Array<{ listening: boolean; error?: string }> = [];
+  let cancelCalls = 0;
+  try {
+    const voice = new VoiceService(
+      () => settings({ recognitionMode: "local" }),
+      async () => { throw new Error("unused"); },
+      () => undefined,
+      () => recognition.promise,
+      async () => { cancelCalls += 1; },
+      timers,
+    );
+    voice.start(
+      () => assert.fail("超时后不应提交最终文本"),
+      (text) => interim.push(text),
+      (listening, error) => states.push({ listening, error }),
+    );
+    await media.ready();
+    media.emitSpeech();
+    voice.start(() => undefined, () => undefined, () => undefined);
+    timers.runDelay(35_000);
+    await nextTask();
+    assert.equal(cancelCalls, 1);
+    assert.equal(interim.at(-1), "");
+    assert.equal(voice.isListening(), false);
+    assert.match(states.at(-1)?.error ?? "", /超时/);
+    recognition.resolve({ text: "迟到结果", durationMs: 900 });
+    await nextTask();
+    assert.equal(states.filter((state) => state.listening === false).length, 1);
+  } finally {
+    media.restore();
+  }
+});
+
+test("本地识别启动失败会停止已获取的麦克风轨道且只结束一次", async () => {
+  const media = installFailingLocalMediaMock();
+  const interim: string[] = [];
+  const states: Array<{ listening: boolean; error?: string }> = [];
+  try {
+    const voice = new VoiceService(
+      () => settings({ recognitionMode: "local" }),
+      async () => { throw new Error("unused"); },
+    );
+    voice.start(
+      () => assert.fail("启动失败后不应提交最终文本"),
+      (text) => interim.push(text),
+      (listening, error) => states.push({ listening, error }),
+    );
+    await media.contextAttempted();
+    await nextTask();
+
+    assert.equal(media.trackStopCalls(), 1);
+    assert.equal(voice.isListening(), false);
+    assert.equal(interim.at(-1), "");
+    assert.equal(states.filter((state) => state.listening === false).length, 1);
+    assert.match(states.at(-1)?.error ?? "", /AudioContext startup failed/);
+  } finally {
+    media.restore();
+  }
+});
+
 function settings(overrides: Partial<AgentSettings["voice"]>): AgentSettings {
   return {
     ...structuredClone(DEFAULT_SETTINGS),
@@ -165,4 +332,148 @@ class MockUtterance {
 function restoreGlobal(name: string, descriptor: PropertyDescriptor | undefined): void {
   if (descriptor) Object.defineProperty(globalThis, name, descriptor);
   else Reflect.deleteProperty(globalThis, name);
+}
+
+interface LocalMediaEnvironment {
+  ready(): Promise<void>;
+  emitSpeech(): void;
+  restore(): void;
+}
+
+function installLocalMediaMock(): LocalMediaEnvironment {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const previousAudioContext = Object.getOwnPropertyDescriptor(globalThis, "AudioContext");
+  let processor: FakeProcessor | undefined;
+  let contextCreated!: () => void;
+  const created = new Promise<void>((resolve) => { contextCreated = resolve; });
+  const track = { stop() {} };
+  const stream = { getTracks: () => [track] } as unknown as MediaStream;
+  class TestAudioContext extends FakeAudioContext {
+    constructor() {
+      super();
+      processor = this.processor;
+      contextCreated();
+    }
+  }
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { mediaDevices: { getUserMedia: async () => stream } },
+  });
+  Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: TestAudioContext });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { AudioContext: TestAudioContext, speechSynthesis: { cancel() {} } },
+  });
+  return {
+    ready: async () => { await created; await nextTask(); },
+    emitSpeech() {
+      const chunk = new Float32Array(4096);
+      chunk.fill(0.2);
+      processor?.onaudioprocess?.({
+        inputBuffer: { getChannelData: () => chunk },
+      } as unknown as AudioProcessingEvent);
+    },
+    restore() {
+      restoreGlobal("window", previousWindow);
+      restoreGlobal("navigator", previousNavigator);
+      restoreGlobal("AudioContext", previousAudioContext);
+    },
+  };
+}
+
+function installFailingLocalMediaMock(): {
+  contextAttempted(): Promise<void>;
+  trackStopCalls(): number;
+  restore(): void;
+} {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const previousAudioContext = Object.getOwnPropertyDescriptor(globalThis, "AudioContext");
+  let stopCalls = 0;
+  let markContextAttempted!: () => void;
+  const contextAttempted = new Promise<void>((resolve) => { markContextAttempted = resolve; });
+  const stream = {
+    getTracks: () => [{ stop: () => { stopCalls += 1; } }],
+  } as unknown as MediaStream;
+  class FailingAudioContext {
+    constructor() {
+      markContextAttempted();
+      throw new Error("AudioContext startup failed");
+    }
+  }
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { mediaDevices: { getUserMedia: async () => stream } },
+  });
+  Object.defineProperty(globalThis, "AudioContext", { configurable: true, value: FailingAudioContext });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { AudioContext: FailingAudioContext, speechSynthesis: { cancel() {} } },
+  });
+  return {
+    contextAttempted: () => contextAttempted,
+    trackStopCalls: () => stopCalls,
+    restore() {
+      restoreGlobal("window", previousWindow);
+      restoreGlobal("navigator", previousNavigator);
+      restoreGlobal("AudioContext", previousAudioContext);
+    },
+  };
+}
+
+class FakeNode {
+  connect(): void {}
+  disconnect(): void {}
+}
+
+class FakeProcessor extends FakeNode {
+  onaudioprocess: ((event: AudioProcessingEvent) => void) | null = null;
+}
+
+class FakeAudioContext {
+  readonly sampleRate = 48_000;
+  readonly destination = {} as AudioDestinationNode;
+  readonly processor = new FakeProcessor();
+  createMediaStreamSource(): MediaStreamAudioSourceNode { return new FakeNode() as unknown as MediaStreamAudioSourceNode; }
+  createScriptProcessor(): ScriptProcessorNode { return this.processor as unknown as ScriptProcessorNode; }
+  createGain(): GainNode {
+    return Object.assign(new FakeNode(), { gain: { value: 1 } }) as unknown as GainNode;
+  }
+  async resume(): Promise<void> {}
+  async close(): Promise<void> {}
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: Error): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
+
+async function nextTask(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+class ManualTimers {
+  private nextId = 0;
+  private readonly tasks = new Map<number, { callback: () => void; delay: number }>();
+
+  setTimeout = (callback: () => void, delay: number): number => {
+    const id = ++this.nextId;
+    this.tasks.set(id, { callback, delay });
+    return id;
+  };
+
+  clearTimeout = (id: number): void => {
+    this.tasks.delete(id);
+  };
+
+  runDelay(delay: number): void {
+    const entries = [...this.tasks.entries()].filter(([, task]) => task.delay === delay);
+    for (const [id, task] of entries) {
+      this.tasks.delete(id);
+      task.callback();
+    }
+  }
 }

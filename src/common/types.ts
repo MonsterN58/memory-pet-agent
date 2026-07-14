@@ -269,6 +269,7 @@ export interface PetAgentBridge {
   synthesizeSpeech(text: string): Promise<TtsAudio>;
   getLocalSpeechStatus(): Promise<LocalSpeechModelStatus>;
   recognizeLocalSpeech(audio: LocalSpeechAudio): Promise<LocalSpeechRecognitionResult>;
+  cancelLocalSpeechRecognition(): Promise<void>;
   showDataDirectory(): Promise<void>;
   minimize(): Promise<void>;
   close(): Promise<void>;

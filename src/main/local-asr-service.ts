@@ -10,6 +10,7 @@ import type {
 } from "../common/types";
 
 export const LOCAL_ASR_MODEL_ID = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23";
+export const LOCAL_ASR_CANCELLED_MESSAGE = "本地语音识别已取消";
 const REQUIRED_FILES = [
   ["encoder-epoch-99-avg-1.int8.onnx", 21_621_684, "1c556ea57cec304e55ec4b72e52c1cc098bb01476ed7d90f3de939fe126487b1"],
   ["decoder-epoch-99-avg-1.onnx", 7_509_745, "5ee0f03a2768ff1d5c83ef3a493243c7935d316cd41280037b14783a3467cc78"],
@@ -31,8 +32,22 @@ type WorkerResponse =
   | { type: "result"; requestId: number; text: string; processingMs: number }
   | { type: "failure"; requestId?: number; message: string };
 
+export interface LocalAsrWorker {
+  on(event: "message", listener: (message: WorkerResponse) => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: "exit", listener: (code: number) => void): this;
+  postMessage(message: unknown, transferList?: readonly ArrayBuffer[]): void;
+  terminate(): Promise<number>;
+}
+
+export interface LocalAsrServiceOptions {
+  createWorker?: (filename: string) => LocalAsrWorker;
+  initializationTimeoutMs?: number;
+  recognitionTimeoutMs?: number;
+}
+
 export class LocalAsrService {
-  private worker?: Worker;
+  private worker?: LocalAsrWorker;
   private workerReady?: Promise<void>;
   private readyResolve?: () => void;
   private readyReject?: (error: Error) => void;
@@ -40,8 +55,15 @@ export class LocalAsrService {
   private readyStatus?: LocalSpeechModelStatus;
   private nextRequestId = 0;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly createWorker: (filename: string) => LocalAsrWorker;
+  private readonly initializationTimeoutMs: number;
+  private readonly recognitionTimeoutMs: number;
 
-  constructor(readonly modelDirectory: string) {}
+  constructor(readonly modelDirectory: string, options: LocalAsrServiceOptions = {}) {
+    this.createWorker = options.createWorker ?? ((filename) => new Worker(filename) as LocalAsrWorker);
+    this.initializationTimeoutMs = options.initializationTimeoutMs ?? 30_000;
+    this.recognitionTimeoutMs = options.recognitionTimeoutMs ?? 30_000;
+  }
 
   async status(): Promise<LocalSpeechModelStatus> {
     if (this.readyStatus) return this.readyStatus;
@@ -87,57 +109,94 @@ export class LocalAsrService {
 
   async recognize(value: unknown): Promise<LocalSpeechRecognitionResult> {
     const audio = sanitizeLocalSpeechAudio(value);
-    const status = await this.status();
-    if (status.state !== "ready") throw new Error(status.message);
-    await this.ensureWorker();
     const requestId = ++this.nextRequestId;
     const durationMs = Math.round(audio.pcm16.byteLength / 2 / audio.sampleRate * 1000);
     return new Promise<LocalSpeechRecognitionResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new Error("本地语音识别超时"));
-      }, 45_000);
+        if (!this.pending.has(requestId)) return;
+        this.resetWorker(new Error("本地语音识别超时"));
+      }, this.recognitionTimeoutMs);
       this.pending.set(requestId, { resolve, reject, durationMs, timeout });
-      this.worker!.postMessage(
-        { type: "recognize", requestId, sampleRate: audio.sampleRate, pcm16: audio.pcm16 },
-        [audio.pcm16],
-      );
+      void this.dispatchRecognition(requestId, audio);
     });
   }
 
+  async warmup(): Promise<void> {
+    const status = await this.status();
+    if (status.state !== "ready") throw new Error(status.message);
+    await this.ensureWorker();
+  }
+
+  async cancelCurrent(): Promise<void> {
+    const worker = this.invalidateWorker(new Error(LOCAL_ASR_CANCELLED_MESSAGE));
+    if (worker) await worker.terminate().catch(() => 0);
+  }
+
   async close(): Promise<void> {
-    const worker = this.worker;
-    this.resetWorker(new Error("应用正在退出"));
-    if (worker) await worker.terminate();
+    const worker = this.invalidateWorker(new Error("应用正在退出"));
+    if (worker) await worker.terminate().catch(() => 0);
+  }
+
+  private async dispatchRecognition(requestId: number, audio: LocalSpeechAudio): Promise<void> {
+    try {
+      const status = await this.status();
+      if (status.state !== "ready") throw new Error(status.message);
+      if (!this.pending.has(requestId)) return;
+      await this.ensureWorker();
+      if (!this.pending.has(requestId)) return;
+      const worker = this.worker;
+      if (!worker) throw new Error("本地识别 worker 未就绪");
+      try {
+        worker.postMessage(
+          { type: "recognize", requestId, sampleRate: audio.sampleRate, pcm16: audio.pcm16 },
+          [audio.pcm16],
+        );
+      } catch (error) {
+        this.resetWorker(error instanceof Error ? error : new Error("无法提交本地语音识别任务"));
+      }
+    } catch (error) {
+      if (!this.pending.has(requestId)) return;
+      const failure = error instanceof Error ? error : new Error("本地语音识别失败");
+      if (this.worker) this.resetWorker(failure);
+      else this.finishPending(requestId, failure);
+    }
   }
 
   private ensureWorker(): Promise<void> {
     if (this.workerReady) return this.workerReady;
-    const worker = new Worker(join(__dirname, "local-asr-worker.js"));
+    const worker = this.createWorker(join(__dirname, "local-asr-worker.js"));
     this.worker = worker;
-    worker.on("message", (message: WorkerResponse) => this.handleWorkerMessage(message));
-    worker.on("error", (error) => this.resetWorker(error));
-    worker.on("exit", (code) => {
-      if (this.worker === worker && code !== 0) this.resetWorker(new Error(`离线识别 worker 异常退出：${code}`));
+    worker.on("message", (message: WorkerResponse) => this.handleWorkerMessage(worker, message));
+    worker.on("error", (error) => {
+      if (this.worker === worker) this.resetWorker(error);
     });
-    this.workerReady = new Promise<void>((resolve, reject) => {
+    worker.on("exit", (code) => {
+      if (this.worker === worker) this.resetWorker(new Error(`离线识别 worker 异常退出：${code}`));
+    });
+    const workerReady = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
     });
+    this.workerReady = workerReady;
     this.initializationTimeout = setTimeout(() => {
       if (this.worker === worker) this.resetWorker(new Error("本地识别模型加载超时"));
-    }, 30_000);
-    worker.postMessage({
-      type: "initialize",
-      encoderPath: wasmPath(join(this.modelDirectory, "encoder-epoch-99-avg-1.int8.onnx")),
-      decoderPath: wasmPath(join(this.modelDirectory, "decoder-epoch-99-avg-1.onnx")),
-      joinerPath: wasmPath(join(this.modelDirectory, "joiner-epoch-99-avg-1.int8.onnx")),
-      tokensPath: wasmPath(join(this.modelDirectory, "tokens.txt")),
-    });
-    return this.workerReady;
+    }, this.initializationTimeoutMs);
+    try {
+      worker.postMessage({
+        type: "initialize",
+        encoderPath: wasmPath(join(this.modelDirectory, "encoder-epoch-99-avg-1.int8.onnx")),
+        decoderPath: wasmPath(join(this.modelDirectory, "decoder-epoch-99-avg-1.onnx")),
+        joinerPath: wasmPath(join(this.modelDirectory, "joiner-epoch-99-avg-1.int8.onnx")),
+        tokensPath: wasmPath(join(this.modelDirectory, "tokens.txt")),
+      });
+    } catch (error) {
+      this.resetWorker(error instanceof Error ? error : new Error("无法初始化本地识别 worker"));
+    }
+    return workerReady;
   }
 
-  private handleWorkerMessage(message: WorkerResponse): void {
+  private handleWorkerMessage(worker: LocalAsrWorker, message: WorkerResponse): void {
+    if (this.worker !== worker) return;
     if (message.type === "ready") {
       if (this.initializationTimeout) clearTimeout(this.initializationTimeout);
       this.initializationTimeout = undefined;
@@ -170,7 +229,7 @@ export class LocalAsrService {
     pending.reject(error);
   }
 
-  private resetWorker(error: Error): void {
+  private invalidateWorker(error: Error): LocalAsrWorker | undefined {
     const worker = this.worker;
     if (this.initializationTimeout) clearTimeout(this.initializationTimeout);
     this.initializationTimeout = undefined;
@@ -180,7 +239,12 @@ export class LocalAsrService {
     this.readyReject = undefined;
     this.worker = undefined;
     for (const [requestId] of this.pending) this.finishPending(requestId, error);
-    if (worker) void worker.terminate();
+    return worker;
+  }
+
+  private resetWorker(error: Error): void {
+    const worker = this.invalidateWorker(error);
+    if (worker) void worker.terminate().catch(() => 0);
   }
 }
 

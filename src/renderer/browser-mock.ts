@@ -178,6 +178,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     async recognizeLocalSpeech() {
       throw new Error("浏览器预览模式未连接本地 ASR");
     },
+    async cancelLocalSpeechRecognition() {},
     async showDataDirectory() {}, async minimize() {}, async close() {},
     async setPetInteraction() {}, async setPetClickThrough() {},
     async startPetDrag() {

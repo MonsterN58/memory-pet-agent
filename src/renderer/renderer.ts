@@ -139,6 +139,7 @@ async function initializePet(): Promise<void> {
     (text) => bridge.synthesizeSpeech(text),
     showToast,
     (audio) => bridge.recognizeLocalSpeech(audio),
+    () => bridge.cancelLocalSpeechRecognition(),
   );
 
   function appendLine(role: "user" | "assistant", text: string): void {
@@ -272,6 +273,11 @@ async function initializePet(): Promise<void> {
     settingsState = state;
     must<HTMLElement>("#pet-agent-name").textContent = state.settings.agentName;
     micButton.disabled = !state.settings.voice.inputEnabled;
+    if (
+      !state.settings.voice.inputEnabled
+      || previousVoice.recognitionMode !== state.settings.voice.recognitionMode
+      || previousVoice.language !== state.settings.voice.language
+    ) voice.stop();
     if (
       !state.settings.voice.outputEnabled
       || previousVoice.ttsMode !== state.settings.voice.ttsMode

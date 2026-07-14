@@ -26,7 +26,11 @@ import type {
 import { AgentService } from "./agent-service";
 import { DesktopMovementController } from "./desktop-movement-controller";
 import { HeartbeatService } from "./heartbeat-service";
-import { LocalAsrService, LOCAL_ASR_MODEL_ID } from "./local-asr-service";
+import {
+  LocalAsrService,
+  LOCAL_ASR_CANCELLED_MESSAGE,
+  LOCAL_ASR_MODEL_ID,
+} from "./local-asr-service";
 import { MemoryEngine } from "./memory/memory-engine";
 import { sanitizeMemoryTarget, sanitizeMemoryUpdate } from "./memory/memory-input";
 import { MemoryRepository } from "./memory/memory-repository";
@@ -53,6 +57,7 @@ let personalityEngine: PersonalityEngine;
 const PET_ACTIONS: PetAction[] = ["wave", "jump", "dance", "sit", "sleep", "surprised"];
 const smokeTest = process.argv.includes("--smoke-test");
 const modelSwitchSmoke = process.argv.includes("--model-switch-smoke");
+const voiceUiSmoke = process.argv.includes("--voice-ui-smoke");
 const capturePetArgument = process.argv.find((argument) => argument.startsWith("--capture-pet="));
 const capturePetPath = capturePetArgument ? resolve(capturePetArgument.slice("--capture-pet=".length)) : undefined;
 const captureDialog = process.argv.includes("--capture-dialog");
@@ -121,7 +126,7 @@ function createPetWindow(): BrowserWindow {
     webPreferences: secureWebPreferences(),
   });
   hardenWindow(window);
-  if (smokeTest || capturePetPath || modelSwitchSmoke) {
+  if (smokeTest || capturePetPath || modelSwitchSmoke || voiceUiSmoke) {
     window.webContents.on("console-message", (details) => {
       console.log(`RENDERER_${details.level.toUpperCase()} ${details.message}`);
     });
@@ -485,7 +490,18 @@ function registerIpc(): void {
     const voice = settingsStore.get().voice;
     if (!voice.inputEnabled) throw new Error("语音输入已关闭");
     if (voice.recognitionMode !== "local") throw new Error("当前未启用本地识别模式");
-    return localAsrService.recognize(value);
+    return localAsrService.recognize(value).catch((error: unknown) => {
+      if (error instanceof Error && error.message === LOCAL_ASR_CANCELLED_MESSAGE) {
+        return { text: "", durationMs: 0 };
+      }
+      throw error;
+    });
+  });
+  ipcMain.handle("voice:cancel-local", (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== petWindow) {
+      throw new Error("不允许从该窗口取消本地语音识别");
+    }
+    return localAsrService.cancelCurrent();
   });
   ipcMain.handle("data:show", async () => {
     await shell.openPath(app.getPath("userData"));
@@ -557,6 +573,11 @@ async function initialize(): Promise<void> {
   await settingsStore.initialize();
   ttsClient = new OpenAICompatibleTtsClient(() => settingsStore.get(), () => settingsStore.getTtsApiKey());
   localAsrService = new LocalAsrService(join(app.getAppPath(), "resources", "voice", LOCAL_ASR_MODEL_ID));
+  if ((!smokeTest && !modelSwitchSmoke && !capturePetPath) || voiceUiSmoke) {
+    void localAsrService.warmup().catch((error: unknown) => {
+      console.warn("Local ASR warmup failed", error);
+    });
+  }
   smokeLog("SETTINGS_READY");
   memoryRepository = new MemoryRepository(dataDirectory);
   await memoryRepository.initialize();

@@ -5,23 +5,37 @@ import type {
   TtsAudio,
 } from "../common/types";
 
-interface LocalCaptureSession {
-  request: number;
+interface LocalCaptureResources {
   stream: MediaStream;
-  context: AudioContext;
-  source: MediaStreamAudioSourceNode;
-  processor: ScriptProcessorNode;
-  mute: GainNode;
+  context?: AudioContext;
+  source?: MediaStreamAudioSourceNode;
+  processor?: ScriptProcessorNode;
+  mute?: GainNode;
+}
+
+interface LocalVoiceOperation {
+  request: number;
+  phase: "starting" | "recording" | "recognizing" | "cancelling";
+  settled: boolean;
+  resources?: LocalCaptureResources;
   chunks: Float32Array[];
   sampleCount: number;
+  inputSampleRate: number;
   startedAt: number;
   lastSpeechAt: number;
   speechDetected: boolean;
   noiseFloor: number;
-  finishing: boolean;
+  recognitionStartedAt: number;
+  watchdog?: number;
+  statusTimer?: number;
   onFinal: (text: string) => void;
   onInterim: (text: string) => void;
   onState: (listening: boolean, error?: string) => void;
+}
+
+export interface VoiceTimerFacade {
+  setTimeout(callback: () => void, delay: number): number;
+  clearTimeout(handle: number): void;
 }
 
 const TARGET_SAMPLE_RATE = 16_000;
@@ -29,13 +43,21 @@ const NO_SPEECH_TIMEOUT_MS = 8_000;
 const END_SILENCE_MS = 1_200;
 const MIN_RECORDING_MS = 700;
 const MAX_RECORDING_MS = 30_000;
+const LOCAL_RECOGNITION_WATCHDOG_MS = 35_000;
+
+const DEFAULT_VOICE_TIMERS: VoiceTimerFacade = {
+  setTimeout: (callback, delay) => globalThis.setTimeout(callback, delay) as unknown as number,
+  clearTimeout: (handle) => globalThis.clearTimeout(handle),
+};
 
 export class VoiceService {
   private recognition?: SpeechRecognitionLike;
+  private browserOnInterim?: (text: string) => void;
+  private browserOnState?: (listening: boolean, error?: string) => void;
   private listening = false;
   private recognitionStarting = false;
   private recognitionRequest = 0;
-  private localCapture?: LocalCaptureSession;
+  private localOperation?: LocalVoiceOperation;
   private speechRequest = 0;
   private currentAudio?: HTMLAudioElement;
   private currentAudioUrl?: string;
@@ -48,6 +70,8 @@ export class VoiceService {
     private recognizeLocal: (audio: LocalSpeechAudio) => Promise<LocalSpeechRecognitionResult> = async () => {
       throw new Error("本地语音识别服务未连接");
     },
+    private cancelRecognize: () => Promise<void> = async () => undefined,
+    private timers: VoiceTimerFacade = DEFAULT_VOICE_TIMERS,
   ) {}
 
   supported(): boolean {
@@ -68,36 +92,71 @@ export class VoiceService {
   ): void {
     const settings = this.getSettings().voice;
     if (!settings.inputEnabled) return onState(false, "语音输入已关闭");
-    if (this.localCapture && this.listening) {
-      void this.finishLocalCapture(this.localCapture);
+    const localOperation = this.localOperation;
+    if (localOperation && !localOperation.settled) {
+      if (localOperation.phase === "recording") void this.finishLocalCapture(localOperation);
+      else this.cancelLocalOperation(localOperation);
       return;
     }
     if (this.listening || this.recognitionStarting) {
       this.stop();
-      onState(false);
       return;
     }
     const request = ++this.recognitionRequest;
     this.recognitionStarting = true;
-    const task = settings.recognitionMode === "local"
-      ? this.startLocalCapture(request, onFinal, onInterim, onState)
-      : this.startBrowserRecognition(settings.language, request, onFinal, onInterim, onState);
+    if (settings.recognitionMode === "local") {
+      const now = performance.now();
+      const operation: LocalVoiceOperation = {
+        request,
+        phase: "starting",
+        settled: false,
+        chunks: [],
+        sampleCount: 0,
+        inputSampleRate: TARGET_SAMPLE_RATE,
+        startedAt: now,
+        lastSpeechAt: now,
+        speechDetected: false,
+        noiseFloor: 0.004,
+        recognitionStartedAt: 0,
+        onFinal,
+        onInterim,
+        onState,
+      };
+      this.localOperation = operation;
+      this.listening = true;
+      void this.startLocalCapture(operation).catch((error: unknown) => {
+        this.finishLocalOperation(operation, {
+          error: error instanceof Error ? error.message : "无法启动语音识别",
+        });
+      });
+      return;
+    }
+    const task = this.startBrowserRecognition(settings.language, request, onFinal, onInterim, onState);
     void task.catch((error: unknown) => {
       if (request !== this.recognitionRequest) return;
       this.recognitionStarting = false;
       this.recognition = undefined;
-      this.cleanupLocalCapture(this.localCapture);
       onState(false, error instanceof Error ? error.message : "无法启动语音识别");
     });
   }
 
   stop(): void {
+    const operation = this.localOperation;
+    if (operation && !operation.settled) {
+      this.cancelLocalOperation(operation);
+      return;
+    }
     this.recognitionRequest += 1;
     this.recognitionStarting = false;
     this.listening = false;
-    this.cleanupLocalCapture(this.localCapture);
     const recognition = this.recognition;
+    const onInterim = this.browserOnInterim;
+    const onState = this.browserOnState;
     this.recognition = undefined;
+    this.browserOnInterim = undefined;
+    this.browserOnState = undefined;
+    onInterim?.("");
+    onState?.(false);
     if (!recognition) return;
     try {
       recognition.abort();
@@ -117,6 +176,8 @@ export class VoiceService {
     if (!Recognition) throw new Error("当前 Chromium 环境不支持兼容语音识别");
     const recognition = new Recognition();
     this.recognition = recognition;
+    this.browserOnInterim = onInterim;
+    this.browserOnState = onState;
     if (request !== this.recognitionRequest) return;
     recognition.lang = language;
     recognition.continuous = false;
@@ -133,6 +194,8 @@ export class VoiceService {
       this.recognitionStarting = false;
       this.listening = false;
       this.recognition = undefined;
+      this.browserOnInterim = undefined;
+      this.browserOnState = undefined;
       onState(false);
     };
     recognition.onerror = (event) => {
@@ -140,6 +203,8 @@ export class VoiceService {
       this.recognitionStarting = false;
       this.listening = false;
       this.recognition = undefined;
+      this.browserOnInterim = undefined;
+      this.browserOnState = undefined;
       onState(false, this.errorMessage(event.error));
     };
     recognition.onresult = (event) => {
@@ -158,17 +223,14 @@ export class VoiceService {
       recognition.start();
     } catch (error) {
       if (this.recognition === recognition) this.recognition = undefined;
+      this.browserOnInterim = undefined;
+      this.browserOnState = undefined;
       this.recognitionStarting = false;
       onState(false, error instanceof Error ? error.message : "无法启动语音识别");
     }
   }
 
-  private async startLocalCapture(
-    request: number,
-    onFinal: (text: string) => void,
-    onInterim: (text: string) => void,
-    onState: (listening: boolean, error?: string) => void,
-  ): Promise<void> {
+  private async startLocalCapture(operation: LocalVoiceOperation): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) {
       throw new Error("当前 Electron 环境无法采集麦克风音频");
     }
@@ -180,124 +242,141 @@ export class VoiceService {
         autoGainControl: true,
       },
     });
-    if (request !== this.recognitionRequest) {
+    if (this.localOperation !== operation || operation.settled) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
+    const resources: LocalCaptureResources = { stream };
+    operation.resources = resources;
     const context = new AudioContext({ latencyHint: "interactive" });
+    resources.context = context;
     const source = context.createMediaStreamSource(stream);
+    resources.source = source;
     const processor = context.createScriptProcessor(4096, 1, 1);
+    resources.processor = processor;
     const mute = context.createGain();
+    resources.mute = mute;
     mute.gain.value = 0;
-    const now = performance.now();
-    const session: LocalCaptureSession = {
-      request,
-      stream,
-      context,
-      source,
-      processor,
-      mute,
-      chunks: [],
-      sampleCount: 0,
-      startedAt: now,
-      lastSpeechAt: now,
-      speechDetected: false,
-      noiseFloor: 0.004,
-      finishing: false,
-      onFinal,
-      onInterim,
-      onState,
-    };
-    this.localCapture = session;
-    processor.onaudioprocess = (event) => this.handleAudioChunk(session, event.inputBuffer.getChannelData(0));
+    operation.inputSampleRate = context.sampleRate;
+    processor.onaudioprocess = (event) => this.handleAudioChunk(operation, event.inputBuffer.getChannelData(0));
     source.connect(processor);
     processor.connect(mute);
     mute.connect(context.destination);
     await context.resume();
-    if (request !== this.recognitionRequest) {
-      this.cleanupLocalCapture(session);
+    if (this.localOperation !== operation || operation.settled) {
+      this.cleanupLocalResources(operation);
       return;
     }
+    operation.phase = "recording";
     this.recognitionStarting = false;
     this.listening = true;
-    onState(true);
+    operation.onState(true);
   }
 
-  private handleAudioChunk(session: LocalCaptureSession, input: Float32Array): void {
-    if (this.localCapture !== session || session.finishing) return;
+  private handleAudioChunk(operation: LocalVoiceOperation, input: Float32Array): void {
+    if (this.localOperation !== operation || operation.phase !== "recording" || operation.settled) return;
     const chunk = new Float32Array(input);
-    session.chunks.push(chunk);
-    session.sampleCount += chunk.length;
+    operation.chunks.push(chunk);
+    operation.sampleCount += chunk.length;
     let energy = 0;
     for (const value of chunk) energy += value * value;
     const rms = Math.sqrt(energy / Math.max(1, chunk.length));
     const now = performance.now();
-    const threshold = Math.max(0.012, session.noiseFloor * 2.8);
+    const threshold = Math.max(0.012, operation.noiseFloor * 2.8);
     if (rms >= threshold) {
-      session.speechDetected = true;
-      session.lastSpeechAt = now;
-    } else if (!session.speechDetected) {
-      session.noiseFloor = Math.min(0.03, session.noiseFloor * 0.94 + rms * 0.06);
+      operation.speechDetected = true;
+      operation.lastSpeechAt = now;
+    } else if (!operation.speechDetected) {
+      operation.noiseFloor = Math.min(0.03, operation.noiseFloor * 0.94 + rms * 0.06);
     }
-    const elapsed = now - session.startedAt;
-    if (session.speechDetected && elapsed >= MIN_RECORDING_MS && now - session.lastSpeechAt >= END_SILENCE_MS) {
-      void this.finishLocalCapture(session);
-    } else if (!session.speechDetected && elapsed >= NO_SPEECH_TIMEOUT_MS) {
-      this.failLocalCapture(session, "没有检测到语音，请靠近麦克风后重试");
+    const elapsed = now - operation.startedAt;
+    if (operation.speechDetected && elapsed >= MIN_RECORDING_MS && now - operation.lastSpeechAt >= END_SILENCE_MS) {
+      void this.finishLocalCapture(operation);
+    } else if (!operation.speechDetected && elapsed >= NO_SPEECH_TIMEOUT_MS) {
+      this.finishLocalOperation(operation, { error: "没有检测到语音，请靠近麦克风后重试" });
     } else if (elapsed >= MAX_RECORDING_MS) {
-      void this.finishLocalCapture(session);
+      void this.finishLocalCapture(operation);
     }
   }
 
-  private async finishLocalCapture(session: LocalCaptureSession): Promise<void> {
-    if (this.localCapture !== session || session.finishing) return;
-    session.finishing = true;
+  private async finishLocalCapture(operation: LocalVoiceOperation): Promise<void> {
+    if (this.localOperation !== operation || operation.phase !== "recording" || operation.settled) return;
+    operation.phase = "recognizing";
     this.recognitionStarting = true;
-    this.cleanupLocalCapture(session, false);
+    const audio = operation.speechDetected
+      ? resampleToPcm16(operation.chunks, operation.sampleCount, operation.inputSampleRate)
+      : undefined;
+    this.cleanupLocalResources(operation);
+    if (!audio) {
+      this.finishLocalOperation(operation, { error: "没有检测到语音" });
+      return;
+    }
+    operation.recognitionStartedAt = performance.now();
+    operation.onInterim("正在本地识别… 0s");
+    const updateElapsed = () => {
+      if (this.localOperation !== operation || operation.settled || operation.phase !== "recognizing") return;
+      const seconds = Math.max(1, Math.floor((performance.now() - operation.recognitionStartedAt) / 1000));
+      operation.onInterim(`正在本地识别… ${seconds}s`);
+      operation.statusTimer = this.timers.setTimeout(updateElapsed, 1000);
+    };
+    operation.statusTimer = this.timers.setTimeout(updateElapsed, 1000);
+    operation.watchdog = this.timers.setTimeout(() => {
+      this.cancelLocalOperation(operation, "本地语音识别超时，请重试");
+    }, LOCAL_RECOGNITION_WATCHDOG_MS);
     try {
-      if (!session.speechDetected) throw new Error("没有检测到语音");
-      session.onInterim("正在本地识别…");
-      const audio = resampleToPcm16(session.chunks, session.sampleCount, session.context.sampleRate);
       const result = await this.recognizeLocal(audio);
-      if (session.request !== this.recognitionRequest) return;
+      if (this.localOperation !== operation || operation.settled) return;
       if (!result.text) throw new Error("没有识别到清晰语音，请重试");
-      session.onFinal(result.text);
-      session.onInterim("");
-      session.onState(false);
+      this.finishLocalOperation(operation, { text: result.text });
     } catch (error) {
-      if (session.request === this.recognitionRequest) {
-        session.onInterim("");
-        session.onState(false, error instanceof Error ? error.message : "本地语音识别失败");
-      }
-    } finally {
-      if (session.request === this.recognitionRequest) {
-        this.recognitionStarting = false;
-        this.listening = false;
-      }
+      this.finishLocalOperation(operation, {
+        error: error instanceof Error ? error.message : "本地语音识别失败",
+      });
     }
   }
 
-  private failLocalCapture(session: LocalCaptureSession, message: string): void {
-    if (this.localCapture !== session) return;
-    this.cleanupLocalCapture(session);
+  private cancelLocalOperation(operation: LocalVoiceOperation, error?: string): void {
+    if (this.localOperation !== operation || operation.settled) return;
+    const cancelWorker = operation.phase === "recognizing";
+    operation.phase = "cancelling";
+    this.finishLocalOperation(operation, error ? { error } : {});
+    if (cancelWorker) {
+      void this.cancelRecognize().catch((cancelError: unknown) => {
+        console.warn("Unable to cancel local speech recognition", cancelError);
+      });
+    }
+  }
+
+  private finishLocalOperation(
+    operation: LocalVoiceOperation,
+    outcome: { text?: string; error?: string },
+  ): void {
+    if (operation.settled || this.localOperation !== operation) return;
+    operation.settled = true;
+    if (operation.watchdog !== undefined) this.timers.clearTimeout(operation.watchdog);
+    if (operation.statusTimer !== undefined) this.timers.clearTimeout(operation.statusTimer);
+    operation.watchdog = undefined;
+    operation.statusTimer = undefined;
+    this.localOperation = undefined;
+    this.cleanupLocalResources(operation);
     this.recognitionStarting = false;
     this.listening = false;
-    session.onState(false, message);
+    operation.onInterim("");
+    operation.onState(false, outcome.error);
+    if (outcome.text) operation.onFinal(outcome.text);
   }
 
-  private cleanupLocalCapture(session: LocalCaptureSession | undefined, resetState = true): void {
-    if (!session) return;
-    if (this.localCapture === session) this.localCapture = undefined;
-    session.processor.onaudioprocess = null;
-    session.source.disconnect();
-    session.processor.disconnect();
-    session.mute.disconnect();
-    session.stream.getTracks().forEach((track) => track.stop());
-    void session.context.close();
-    if (resetState) {
-      this.recognitionStarting = false;
-      this.listening = false;
+  private cleanupLocalResources(operation: LocalVoiceOperation): void {
+    const resources = operation.resources;
+    operation.resources = undefined;
+    if (!resources) return;
+    if (resources.processor) resources.processor.onaudioprocess = null;
+    for (const node of [resources.source, resources.processor, resources.mute]) {
+      if (!node) continue;
+      try { node.disconnect(); } catch { /* The node was already disconnected. */ }
     }
+    resources.stream.getTracks().forEach((track) => track.stop());
+    void resources.context?.close().catch(() => undefined);
   }
 
   speak(text: string): void {
