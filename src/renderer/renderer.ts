@@ -353,7 +353,6 @@ async function initializePet(): Promise<void> {
       },
       (listening, error) => {
         micButton.classList.toggle("listening", listening);
-        setModelEmotion(listening ? "listening" : "idle");
         reactions.setVoiceActive(listening);
         if (error) showToast(error);
       },

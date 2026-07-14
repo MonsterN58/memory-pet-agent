@@ -35,6 +35,7 @@ export class PetReactionCoordinator {
   private replySequence = 0;
   private voiceActive = false;
   private motion: PetLocomotion = "idle";
+  private deferredVoiceEmotion?: PetEmotion;
 
   constructor(
     private readonly director: PetReactionDirector,
@@ -43,6 +44,7 @@ export class PetReactionCoordinator {
 
   handleResponse(response: Pick<ChatResponse, "emotion" | "text">): void {
     this.effects.setEmotion(response.emotion);
+    if (this.voiceActive) this.deferredVoiceEmotion = response.emotion;
     this.play(this.director.choose({
       replyId: String(++this.replySequence),
       emotion: response.emotion,
@@ -53,8 +55,18 @@ export class PetReactionCoordinator {
   }
 
   setVoiceActive(active: boolean): void {
+    const wasActive = this.voiceActive;
     this.voiceActive = active;
-    if (!active) this.flush();
+    if (active) {
+      if (!wasActive) this.deferredVoiceEmotion = undefined;
+      this.effects.setEmotion("listening");
+      return;
+    }
+    if (wasActive) {
+      this.effects.setEmotion(this.deferredVoiceEmotion ?? "idle");
+      this.deferredVoiceEmotion = undefined;
+    }
+    this.flush();
   }
 
   setMotion(motion: PetLocomotion): void {

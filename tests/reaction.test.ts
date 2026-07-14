@@ -20,6 +20,12 @@ test("情绪推断同时参考用户语境和助手回复", () => {
   }
 });
 
+test("常见疲惫表达配合安慰回复会推断为 comforting", () => {
+  const response = "我在。你不必一下子把一切都解决，我们慢慢来。";
+  assert.equal(inferReaction("我累了", response), "comforting");
+  assert.equal(inferReaction("我最近很疲惫", response), "comforting");
+});
+
 test("动作导演每条回复至多触发一次并限制连续强动作", () => {
   let now = 10_000;
   const director = new PetReactionDirector({ now: () => now, random: () => 0 });
@@ -88,26 +94,42 @@ test("Renderer 协调器先更新情绪并为连续回复生成独立动作", ()
   ]);
 });
 
-test("Renderer 协调器在语音和阻塞运动结束后释放最新动作", () => {
-  const actions: string[] = [];
+test("Renderer 协调器在语音结束时恢复最新回复情绪再释放动作", () => {
+  const events: string[] = [];
   const coordinator = new PetReactionCoordinator(
     new PetReactionDirector({ now: () => 50_000, random: () => 0 }),
-    { setEmotion: () => {}, playAction: (action) => actions.push(action) },
+    {
+      setEmotion: (emotion) => events.push(`emotion:${emotion}`),
+      playAction: (action) => events.push(`action:${action}`),
+    },
   );
 
   coordinator.setVoiceActive(true);
   coordinator.handleResponse({ emotion: "curious", text: "先听我说完好吗？" });
-  assert.deepEqual(actions, []);
+  assert.deepEqual(events, ["emotion:listening", "emotion:curious"]);
   coordinator.setVoiceActive(false);
-  assert.deepEqual(actions, ["head-tilt"]);
+  assert.deepEqual(events, [
+    "emotion:listening",
+    "emotion:curious",
+    "emotion:curious",
+    "action:head-tilt",
+  ]);
+});
+
+test("Renderer 协调器只在阻塞运动结束后释放最新动作", () => {
+  const actions: string[] = [];
+  const coordinator = new PetReactionCoordinator(
+    new PetReactionDirector({ now: () => 60_000, random: () => 0 }),
+    { setEmotion: () => {}, playAction: (action) => actions.push(action) },
+  );
 
   coordinator.setMotion("dragged");
   coordinator.handleResponse({ emotion: "comforting", text: "没关系，我会陪着你。" });
   coordinator.setMotion("falling");
   coordinator.setMotion("landing");
-  assert.deepEqual(actions, ["head-tilt"]);
+  assert.deepEqual(actions, []);
   coordinator.setMotion("walk-right");
-  assert.deepEqual(actions, ["head-tilt", "comfort"]);
+  assert.deepEqual(actions, ["comfort"]);
 });
 
 function reactionInput(replyId: string, emotion: PetEmotion, replyText: string) {

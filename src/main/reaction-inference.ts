@@ -1,6 +1,6 @@
 import type { PetEmotion } from "../common/types";
 
-const DISTRESS = /难过|伤心|焦虑|压力|崩溃|痛苦|害怕|孤独|委屈|累坏|撑不住/;
+const DISTRESS = /难过|伤心|焦虑|压力|崩溃|痛苦|害怕|孤独|委屈|累坏|累了|疲惫|撑不住/;
 const SUPPORT = /陪|慢慢来|别急|没关系|我在|抱抱|理解|辛苦|不必.*解决/;
 
 export function inferReaction(userText: string, responseText: string): PetEmotion {
