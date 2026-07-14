@@ -166,6 +166,36 @@ test("worker initialize postMessage 同步失败会让 warmup 明确失败", asy
   await service.close();
 });
 
+test("close 后不会让仍在等待 status 的 warmup 复活 worker", async () => {
+  const workers: FakeWorker[] = [];
+  const status = deferred<Awaited<ReturnType<LocalAsrService["status"]>>>();
+  const service = new DeferredStatusLocalAsrService("D:/fixture/model", status.promise, {
+    createWorker: () => {
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    },
+    initializationTimeoutMs: 500,
+    recognitionTimeoutMs: 500,
+  });
+  const warmup = service.warmup();
+  await service.statusStarted;
+  await service.close();
+  const rejected = assert.rejects(warmup, /已关闭/);
+  status.resolve({
+    state: "ready",
+    modelId: "test-model",
+    directory: service.modelDirectory,
+    sizeBytes: 1,
+    message: "ready",
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  workers[0]?.emitMessage({ type: "ready" });
+
+  await rejected;
+  assert.equal(workers.length, 0);
+});
+
 class ReadyLocalAsrService extends LocalAsrService {
   override async status() {
     return {
@@ -175,6 +205,25 @@ class ReadyLocalAsrService extends LocalAsrService {
       sizeBytes: 1,
       message: "ready",
     };
+  }
+}
+
+class DeferredStatusLocalAsrService extends LocalAsrService {
+  readonly statusStarted: Promise<void>;
+  private markStatusStarted!: () => void;
+
+  constructor(
+    modelDirectory: string,
+    private readonly statusResult: Promise<Awaited<ReturnType<LocalAsrService["status"]>>>,
+    options: LocalAsrServiceOptions,
+  ) {
+    super(modelDirectory, options);
+    this.statusStarted = new Promise<void>((resolve) => { this.markStatusStarted = resolve; });
+  }
+
+  override async status() {
+    this.markStatusStarted();
+    return this.statusResult;
   }
 }
 
@@ -236,4 +285,10 @@ async function waitForWorker(workers: FakeWorker[], index: number): Promise<Fake
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   throw new Error(`worker ${index} was not created`);
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((onResolve) => { resolve = onResolve; });
+  return { promise, resolve };
 }

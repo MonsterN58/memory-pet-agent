@@ -11,6 +11,7 @@ import type {
 
 export const LOCAL_ASR_MODEL_ID = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23";
 export const LOCAL_ASR_CANCELLED_MESSAGE = "本地语音识别已取消";
+const LOCAL_ASR_CLOSED_MESSAGE = "本地语音识别服务已关闭";
 const REQUIRED_FILES = [
   ["encoder-epoch-99-avg-1.int8.onnx", 21_621_684, "1c556ea57cec304e55ec4b72e52c1cc098bb01476ed7d90f3de939fe126487b1"],
   ["decoder-epoch-99-avg-1.onnx", 7_509_745, "5ee0f03a2768ff1d5c83ef3a493243c7935d316cd41280037b14783a3467cc78"],
@@ -58,6 +59,7 @@ export class LocalAsrService {
   private readonly createWorker: (filename: string) => LocalAsrWorker;
   private readonly initializationTimeoutMs: number;
   private readonly recognitionTimeoutMs: number;
+  private closed = false;
 
   constructor(readonly modelDirectory: string, options: LocalAsrServiceOptions = {}) {
     this.createWorker = options.createWorker ?? ((filename) => new Worker(filename) as LocalAsrWorker);
@@ -108,6 +110,7 @@ export class LocalAsrService {
   }
 
   async recognize(value: unknown): Promise<LocalSpeechRecognitionResult> {
+    this.assertOpen();
     const audio = sanitizeLocalSpeechAudio(value);
     const requestId = ++this.nextRequestId;
     const durationMs = Math.round(audio.pcm16.byteLength / 2 / audio.sampleRate * 1000);
@@ -122,7 +125,9 @@ export class LocalAsrService {
   }
 
   async warmup(): Promise<void> {
+    this.assertOpen();
     const status = await this.status();
+    this.assertOpen();
     if (status.state !== "ready") throw new Error(status.message);
     await this.ensureWorker();
   }
@@ -133,6 +138,7 @@ export class LocalAsrService {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     const worker = this.invalidateWorker(new Error("应用正在退出"));
     if (worker) await worker.terminate().catch(() => 0);
   }
@@ -163,6 +169,7 @@ export class LocalAsrService {
   }
 
   private ensureWorker(): Promise<void> {
+    this.assertOpen();
     if (this.workerReady) return this.workerReady;
     const worker = this.createWorker(join(__dirname, "local-asr-worker.js"));
     this.worker = worker;
@@ -245,6 +252,10 @@ export class LocalAsrService {
   private resetWorker(error: Error): void {
     const worker = this.invalidateWorker(error);
     if (worker) void worker.terminate().catch(() => 0);
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error(LOCAL_ASR_CLOSED_MESSAGE);
   }
 }
 

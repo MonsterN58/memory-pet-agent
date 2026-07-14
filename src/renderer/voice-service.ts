@@ -243,7 +243,7 @@ export class VoiceService {
       },
     });
     if (this.localOperation !== operation || operation.settled) {
-      stream.getTracks().forEach((track) => track.stop());
+      stopMediaStream(stream);
       return;
     }
     const resources: LocalCaptureResources = { stream };
@@ -270,7 +270,7 @@ export class VoiceService {
     operation.phase = "recording";
     this.recognitionStarting = false;
     this.listening = true;
-    operation.onState(true);
+    invokeVoiceCallback(() => operation.onState(true));
   }
 
   private handleAudioChunk(operation: LocalVoiceOperation, input: Float32Array): void {
@@ -303,27 +303,29 @@ export class VoiceService {
     if (this.localOperation !== operation || operation.phase !== "recording" || operation.settled) return;
     operation.phase = "recognizing";
     this.recognitionStarting = true;
-    const audio = operation.speechDetected
-      ? resampleToPcm16(operation.chunks, operation.sampleCount, operation.inputSampleRate)
-      : undefined;
-    this.cleanupLocalResources(operation);
-    if (!audio) {
-      this.finishLocalOperation(operation, { error: "没有检测到语音" });
-      return;
-    }
-    operation.recognitionStartedAt = performance.now();
-    operation.onInterim("正在本地识别… 0s");
-    const updateElapsed = () => {
-      if (this.localOperation !== operation || operation.settled || operation.phase !== "recognizing") return;
-      const seconds = Math.max(1, Math.floor((performance.now() - operation.recognitionStartedAt) / 1000));
-      operation.onInterim(`正在本地识别… ${seconds}s`);
-      operation.statusTimer = this.timers.setTimeout(updateElapsed, 1000);
-    };
-    operation.statusTimer = this.timers.setTimeout(updateElapsed, 1000);
-    operation.watchdog = this.timers.setTimeout(() => {
-      this.cancelLocalOperation(operation, "本地语音识别超时，请重试");
-    }, LOCAL_RECOGNITION_WATCHDOG_MS);
     try {
+      const audio = operation.speechDetected
+        ? resampleToPcm16(operation.chunks, operation.sampleCount, operation.inputSampleRate)
+        : undefined;
+      this.cleanupLocalResources(operation);
+      if (!audio) {
+        this.finishLocalOperation(operation, { error: "没有检测到语音" });
+        return;
+      }
+      operation.recognitionStartedAt = performance.now();
+      invokeVoiceCallback(() => operation.onInterim("正在本地识别… 0s"));
+      if (this.localOperation !== operation || operation.settled || operation.phase !== "recognizing") return;
+      const updateElapsed = () => {
+        if (this.localOperation !== operation || operation.settled || operation.phase !== "recognizing") return;
+        const seconds = Math.max(1, Math.floor((performance.now() - operation.recognitionStartedAt) / 1000));
+        invokeVoiceCallback(() => operation.onInterim(`正在本地识别… ${seconds}s`));
+        if (this.localOperation !== operation || operation.settled || operation.phase !== "recognizing") return;
+        operation.statusTimer = this.timers.setTimeout(updateElapsed, 1000);
+      };
+      operation.statusTimer = this.timers.setTimeout(updateElapsed, 1000);
+      operation.watchdog = this.timers.setTimeout(() => {
+        this.cancelLocalOperation(operation, "本地语音识别超时，请重试");
+      }, LOCAL_RECOGNITION_WATCHDOG_MS);
       const result = await this.recognizeLocal(audio);
       if (this.localOperation !== operation || operation.settled) return;
       if (!result.text) throw new Error("没有识别到清晰语音，请重试");
@@ -339,11 +341,18 @@ export class VoiceService {
     if (this.localOperation !== operation || operation.settled) return;
     const cancelWorker = operation.phase === "recognizing";
     operation.phase = "cancelling";
-    this.finishLocalOperation(operation, error ? { error } : {});
-    if (cancelWorker) {
-      void this.cancelRecognize().catch((cancelError: unknown) => {
-        console.warn("Unable to cancel local speech recognition", cancelError);
-      });
+    try {
+      this.finishLocalOperation(operation, error ? { error } : {});
+    } finally {
+      if (cancelWorker) {
+        try {
+          void Promise.resolve(this.cancelRecognize()).catch((cancelError: unknown) => {
+            console.warn("Unable to cancel local speech recognition", cancelError);
+          });
+        } catch (cancelError) {
+          console.warn("Unable to cancel local speech recognition", cancelError);
+        }
+      }
     }
   }
 
@@ -361,22 +370,30 @@ export class VoiceService {
     this.cleanupLocalResources(operation);
     this.recognitionStarting = false;
     this.listening = false;
-    operation.onInterim("");
-    operation.onState(false, outcome.error);
-    if (outcome.text) operation.onFinal(outcome.text);
+    invokeVoiceCallback(() => operation.onInterim(""));
+    invokeVoiceCallback(() => operation.onState(false, outcome.error));
+    if (outcome.text) invokeVoiceCallback(() => operation.onFinal(outcome.text!));
   }
 
   private cleanupLocalResources(operation: LocalVoiceOperation): void {
     const resources = operation.resources;
     operation.resources = undefined;
     if (!resources) return;
-    if (resources.processor) resources.processor.onaudioprocess = null;
+    try {
+      if (resources.processor) resources.processor.onaudioprocess = null;
+    } catch {
+      // 资源已由浏览器释放时继续完成其余清理。
+    }
     for (const node of [resources.source, resources.processor, resources.mute]) {
       if (!node) continue;
       try { node.disconnect(); } catch { /* The node was already disconnected. */ }
     }
-    resources.stream.getTracks().forEach((track) => track.stop());
-    void resources.context?.close().catch(() => undefined);
+    stopMediaStream(resources.stream);
+    try {
+      void resources.context?.close().catch(() => undefined);
+    } catch {
+      // close() 也可能在上下文已关闭时同步抛错。
+    }
   }
 
   speak(text: string): void {
@@ -545,6 +562,18 @@ function matchingVoice(voices: SpeechSynthesisVoice[], language: string): Speech
   const wanted = language.toLowerCase();
   return voices.find((voice) => voice.lang.toLowerCase() === wanted)
     ?? voices.find((voice) => voice.lang.toLowerCase().split("-")[0] === wanted.split("-")[0]);
+}
+
+function invokeVoiceCallback(callback: () => void): void {
+  try { callback(); } catch { /* UI 回调异常不能破坏语音 operation 收尾。 */ }
+}
+
+function stopMediaStream(stream: MediaStream): void {
+  let tracks: MediaStreamTrack[];
+  try { tracks = stream.getTracks(); } catch { return; }
+  for (const track of tracks) {
+    try { track.stop(); } catch { /* 继续停止其余轨道。 */ }
+  }
 }
 
 function base64AudioBlob(result: TtsAudio): Blob {
