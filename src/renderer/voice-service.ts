@@ -11,6 +11,7 @@ interface LocalCaptureResources {
   source?: MediaStreamAudioSourceNode;
   processor?: ScriptProcessorNode;
   mute?: GainNode;
+  trackEndedListeners?: Array<{ track: MediaStreamTrack; listener: () => void }>;
 }
 
 interface LocalVoiceOperation {
@@ -26,6 +27,8 @@ interface LocalVoiceOperation {
   speechDetected: boolean;
   noiseFloor: number;
   recognitionStartedAt: number;
+  captureWatchdog?: number;
+  noSpeechWatchdog?: number;
   watchdog?: number;
   statusTimer?: number;
   onFinal: (text: string) => void;
@@ -123,6 +126,11 @@ export class VoiceService {
         onState,
       };
       this.localOperation = operation;
+      operation.captureWatchdog = this.timers.setTimeout(() => {
+        if (this.localOperation === operation && !operation.settled && operation.phase === "starting") {
+          this.finishLocalOperation(operation, { error: "麦克风启动超时，请重试" });
+        }
+      }, MAX_RECORDING_MS);
       this.listening = true;
       void this.startLocalCapture(operation).catch((error: unknown) => {
         this.finishLocalOperation(operation, {
@@ -248,6 +256,22 @@ export class VoiceService {
     }
     const resources: LocalCaptureResources = { stream };
     operation.resources = resources;
+    const trackEnded = () => {
+      if (
+        this.localOperation === operation
+        && !operation.settled
+        && (operation.phase === "starting" || operation.phase === "recording")
+      ) {
+        this.finishLocalOperation(operation, { error: "麦克风已断开，请重新连接后重试" });
+      }
+    };
+    resources.trackEndedListeners = [];
+    for (const track of stream.getTracks()) {
+      if (typeof track.addEventListener !== "function") continue;
+      track.addEventListener("ended", trackEnded, { once: true });
+      resources.trackEndedListeners.push({ track, listener: trackEnded });
+    }
+    if (this.localOperation !== operation || operation.settled) return;
     const context = new AudioContext({ latencyHint: "interactive" });
     resources.context = context;
     const source = context.createMediaStreamSource(stream);
@@ -268,6 +292,25 @@ export class VoiceService {
       return;
     }
     operation.phase = "recording";
+    const recordingStartedAt = performance.now();
+    operation.startedAt = recordingStartedAt;
+    operation.lastSpeechAt = recordingStartedAt;
+    this.clearCaptureTimers(operation);
+    operation.captureWatchdog = this.timers.setTimeout(() => {
+      if (this.localOperation !== operation || operation.settled || operation.phase !== "recording") return;
+      if (operation.speechDetected) void this.finishLocalCapture(operation);
+      else this.finishLocalOperation(operation, { error: "没有检测到语音，请靠近麦克风后重试" });
+    }, MAX_RECORDING_MS);
+    operation.noSpeechWatchdog = this.timers.setTimeout(() => {
+      if (
+        this.localOperation === operation
+        && !operation.settled
+        && operation.phase === "recording"
+        && !operation.speechDetected
+      ) {
+        this.finishLocalOperation(operation, { error: "没有检测到语音，请靠近麦克风后重试" });
+      }
+    }, NO_SPEECH_TIMEOUT_MS);
     this.recognitionStarting = false;
     this.listening = true;
     invokeVoiceCallback(() => operation.onState(true));
@@ -275,7 +318,13 @@ export class VoiceService {
 
   private handleAudioChunk(operation: LocalVoiceOperation, input: Float32Array): void {
     if (this.localOperation !== operation || operation.phase !== "recording" || operation.settled) return;
-    const chunk = new Float32Array(input);
+    const maxSampleCount = Math.max(1, Math.floor(operation.inputSampleRate * MAX_RECORDING_MS / 1000));
+    const remainingSamples = maxSampleCount - operation.sampleCount;
+    if (remainingSamples <= 0) {
+      void this.finishLocalCapture(operation);
+      return;
+    }
+    const chunk = new Float32Array(input.subarray(0, Math.min(input.length, remainingSamples)));
     operation.chunks.push(chunk);
     operation.sampleCount += chunk.length;
     let energy = 0;
@@ -284,10 +333,18 @@ export class VoiceService {
     const now = performance.now();
     const threshold = Math.max(0.012, operation.noiseFloor * 2.8);
     if (rms >= threshold) {
+      if (!operation.speechDetected && operation.noSpeechWatchdog !== undefined) {
+        this.timers.clearTimeout(operation.noSpeechWatchdog);
+        operation.noSpeechWatchdog = undefined;
+      }
       operation.speechDetected = true;
       operation.lastSpeechAt = now;
     } else if (!operation.speechDetected) {
       operation.noiseFloor = Math.min(0.03, operation.noiseFloor * 0.94 + rms * 0.06);
+    }
+    if (operation.sampleCount >= maxSampleCount) {
+      void this.finishLocalCapture(operation);
+      return;
     }
     const elapsed = now - operation.startedAt;
     if (operation.speechDetected && elapsed >= MIN_RECORDING_MS && now - operation.lastSpeechAt >= END_SILENCE_MS) {
@@ -302,6 +359,7 @@ export class VoiceService {
   private async finishLocalCapture(operation: LocalVoiceOperation): Promise<void> {
     if (this.localOperation !== operation || operation.phase !== "recording" || operation.settled) return;
     operation.phase = "recognizing";
+    this.clearCaptureTimers(operation);
     this.recognitionStarting = true;
     try {
       const audio = operation.speechDetected
@@ -366,6 +424,7 @@ export class VoiceService {
     if (operation.statusTimer !== undefined) this.timers.clearTimeout(operation.statusTimer);
     operation.watchdog = undefined;
     operation.statusTimer = undefined;
+    this.clearCaptureTimers(operation);
     this.localOperation = undefined;
     this.cleanupLocalResources(operation);
     this.recognitionStarting = false;
@@ -379,6 +438,9 @@ export class VoiceService {
     const resources = operation.resources;
     operation.resources = undefined;
     if (!resources) return;
+    for (const { track, listener } of resources.trackEndedListeners ?? []) {
+      try { track.removeEventListener("ended", listener); } catch { /* 继续释放其余音频资源。 */ }
+    }
     try {
       if (resources.processor) resources.processor.onaudioprocess = null;
     } catch {
@@ -394,6 +456,13 @@ export class VoiceService {
     } catch {
       // close() 也可能在上下文已关闭时同步抛错。
     }
+  }
+
+  private clearCaptureTimers(operation: LocalVoiceOperation): void {
+    if (operation.captureWatchdog !== undefined) this.timers.clearTimeout(operation.captureWatchdog);
+    if (operation.noSpeechWatchdog !== undefined) this.timers.clearTimeout(operation.noSpeechWatchdog);
+    operation.captureWatchdog = undefined;
+    operation.noSpeechWatchdog = undefined;
   }
 
   speak(text: string): void {
