@@ -41,7 +41,7 @@ export interface PetFocus {
   x: number;
   y: number;
 }
-export type PetUiCommand = "focus-chat";
+export type PetUiCommand = "focus-chat" | "suspend";
 export type ControlPanelView = "settings" | "memory";
 export type VoiceRecognitionMode = "local" | "browser";
 export type VoiceOutputMode = "local" | "cloud";

@@ -22,6 +22,7 @@ import type { PetModelAdapter } from "./model-adapter";
 import { DefaultPetAdapter } from "./model-adapter";
 import { Live2DPetAdapter } from "./live2d-pet-adapter";
 import { PetReactionCoordinator, PetReactionDirector } from "./pet-reaction-director";
+import { PetUiLifecycle } from "./pet-ui-command";
 import { VoiceService } from "./voice-service";
 
 function must<T extends Element>(selector: string): T {
@@ -166,6 +167,11 @@ async function initializePet(): Promise<void> {
     setEmotion: setModelEmotion,
     playAction: playModelAction,
   });
+  const uiLifecycle = new PetUiLifecycle({
+    focusChat: () => showDialog(true),
+    stopVoiceInput: () => voice.stop(),
+    stopVoiceOutput: () => voice.cancelSpeech(),
+  });
 
   function setModelMotion(frame: PetMotionFrame): void {
     currentMotion = frame;
@@ -306,10 +312,12 @@ async function initializePet(): Promise<void> {
     appendLine("assistant", response.text);
     must<HTMLElement>("#pet-mode-badge").textContent = response.source === "provider" ? "模型在线" : "本地陪伴";
     reactions.handleResponse(response);
-    void model.speak(response.text);
-    voice.speak(response.text);
-    showDialog(false, 12_000, "caption");
-    if (response.warning) showToast(response.warning);
+    uiLifecycle.presentResponse(() => {
+      void model.speak(response.text);
+      voice.speak(response.text);
+      showDialog(false, 12_000, "caption");
+      if (response.warning) showToast(response.warning);
+    });
   }
 
   async function sendMessage(raw?: string): Promise<void> {
@@ -401,10 +409,11 @@ async function initializePet(): Promise<void> {
   });
   bridge.onPetAction((action) => reactions.playManualAction(action));
   bridge.onModelChanged(() => void loadConfiguredModel(true));
-  bridge.onUiCommand((command) => {
-    if (command === "focus-chat") showDialog(true);
+  bridge.onUiCommand((command) => uiLifecycle.handle(command));
+  bridge.onProactiveMessage((response) => {
+    uiLifecycle.resume();
+    handleResponse(response);
   });
-  bridge.onProactiveMessage(handleResponse);
   bridge.onSettingsChanged(applyPetSettings);
 
   try {

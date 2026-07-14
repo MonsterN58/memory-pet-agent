@@ -35,6 +35,7 @@ import { MemoryEngine } from "./memory/memory-engine";
 import { sanitizeMemoryTarget, sanitizeMemoryUpdate } from "./memory/memory-input";
 import { MemoryRepository } from "./memory/memory-repository";
 import { ModelStore } from "./model-store";
+import { hidePetWindow } from "./pet-window-lifecycle";
 import { OpenAICompatibleTtsClient } from "./provider/openai-compatible-tts";
 import { PersonalityEngine } from "./personality/personality-engine";
 import { PersonalityStore } from "./personality/personality-store";
@@ -196,7 +197,7 @@ function createPetWindow(): BrowserWindow {
   window.on("close", (event) => {
     if (!quitting) {
       event.preventDefault();
-      window.hide();
+      hidePetWindow(window);
     }
   });
   return window;
@@ -343,7 +344,7 @@ function showPetContextMenu(): void {
     { label: "立即执行心跳", click: () => void heartbeatService.run("manual", true) },
     { label: "打开本地数据目录", click: () => void shell.openPath(app.getPath("userData")) },
     { type: "separator" },
-    { label: "隐藏桌宠", click: () => petWindow?.hide() },
+    { label: "隐藏桌宠", click: () => hidePetWindow(petWindow) },
     { label: "退出", click: quitApplication },
   ];
   Menu.buildFromTemplate(template).popup({ window: petWindow });
@@ -519,7 +520,7 @@ function registerIpc(): void {
   ipcMain.handle("window:minimize", (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.handle("window:close", (event) => {
     const sourceWindow = BrowserWindow.fromWebContents(event.sender);
-    if (sourceWindow === petWindow) sourceWindow.hide();
+    if (sourceWindow === petWindow) hidePetWindow(sourceWindow);
     else sourceWindow?.close();
   });
   ipcMain.handle("pet:interaction", (event, active: unknown) => {
