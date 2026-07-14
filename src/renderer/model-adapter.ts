@@ -1,4 +1,5 @@
 import type { PetAction, PetEmotion, PetFocus, PetMotionFrame } from "../common/types";
+import { proceduralActionDurationMs } from "./live2d-interaction";
 
 export interface PetModelAdapter {
   readonly id: string;
@@ -71,7 +72,7 @@ export class DefaultPetAdapter implements PetModelAdapter {
     this.root.dataset.action = action;
     window.setTimeout(() => {
       if (this.root?.dataset.action === action) delete this.root.dataset.action;
-    }, 1400);
+    }, proceduralActionDurationMs(action));
     return true;
   }
 

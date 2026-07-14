@@ -54,7 +54,10 @@ let modelStore: ModelStore;
 let ttsClient: OpenAICompatibleTtsClient;
 let localAsrService: LocalAsrService;
 let personalityEngine: PersonalityEngine;
-const PET_ACTIONS: PetAction[] = ["wave", "jump", "dance", "sit", "sleep", "surprised"];
+const PET_ACTIONS: PetAction[] = [
+  "wave", "nod", "shake-head", "head-tilt", "jump", "cheer", "dance",
+  "sit", "stretch", "shy", "comfort", "sleep", "surprised",
+];
 const smokeTest = process.argv.includes("--smoke-test");
 const modelSwitchSmoke = process.argv.includes("--model-switch-smoke");
 const voiceUiSmoke = process.argv.includes("--voice-ui-smoke");
@@ -266,9 +269,16 @@ function modelAndActionsMenu(): MenuItemConstructorOptions {
   const modelState = modelStore?.getState();
   const actionLabels: Record<PetAction, string> = {
     wave: "挥手",
+    nod: "点头",
+    "shake-head": "摇头",
+    "head-tilt": "歪头",
     jump: "跳跃",
+    cheer: "庆祝",
     dance: "跳舞",
     sit: "坐下",
+    stretch: "伸懒腰",
+    shy: "害羞",
+    comfort: "安慰",
     sleep: "睡觉",
     surprised: "惊讶",
   };

@@ -12,7 +12,20 @@ export interface PetMotionFrame {
   offsetX: number;
   offsetY: number;
 }
-export type PetAction = "wave" | "jump" | "dance" | "sit" | "sleep" | "surprised";
+export type PetAction =
+  | "wave"
+  | "nod"
+  | "shake-head"
+  | "head-tilt"
+  | "jump"
+  | "cheer"
+  | "dance"
+  | "sit"
+  | "stretch"
+  | "shy"
+  | "comfort"
+  | "sleep"
+  | "surprised";
 export interface PetFocus {
   x: number;
   y: number;

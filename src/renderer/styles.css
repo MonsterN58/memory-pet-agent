@@ -37,9 +37,34 @@ button { color: inherit; }
 .pet-hit-area { position:absolute; z-index:5; left:25px; right:25px; top:122px; bottom:0; outline:0; cursor:grab; touch-action:none; }
 .pet-hit-area.dragging { cursor:grabbing; }
 .pet-mount { width:270px; height:330px; position:absolute; left:50%; bottom:0; transform:translateX(-50%); }
-.model-staging{position:absolute;inset:0;width:100%;height:100%;visibility:hidden;pointer-events:none}.live2d-pet,.live2d-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.live2d-canvas{display:block;transform-origin:50% 92%;will-change:transform,filter}.live2d-pet.locomotion-idle .live2d-canvas{animation:live2d-idle 4.8s ease-in-out infinite}.live2d-pet.locomotion-walk-left .live2d-canvas,.live2d-pet.locomotion-walk-right .live2d-canvas{animation:live2d-walk .46s ease-in-out infinite alternate}.live2d-pet.locomotion-dragged .live2d-canvas{animation:live2d-drag .8s ease-in-out infinite alternate;filter:drop-shadow(0 12px 8px rgba(42,31,98,.18))}.live2d-pet.locomotion-falling .live2d-canvas{animation:live2d-fall .48s cubic-bezier(.2,.8,.35,1)}.live2d-pet.is-speaking .live2d-canvas{filter:drop-shadow(0 0 9px rgba(135,111,246,.22))}.live2d-pet.action-wave .live2d-canvas{animation:live2d-wave .4s ease-in-out 4 alternate}.live2d-pet.action-jump .live2d-canvas{animation:live2d-jump .6s cubic-bezier(.25,.8,.35,1) 2}.live2d-pet.action-dance .live2d-canvas{animation:live2d-dance .4s ease-in-out 6 alternate}.live2d-pet.action-sit .live2d-canvas{animation:live2d-sit 2s ease forwards}.live2d-pet.action-sleep .live2d-canvas{animation:live2d-sleep 3.5s ease-in-out forwards}.live2d-pet.action-surprised .live2d-canvas{animation:live2d-surprised .45s ease-out 2 alternate}
+.model-staging{position:absolute;inset:0;width:100%;height:100%;visibility:hidden;pointer-events:none}
+.live2d-pet,.live2d-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.live2d-canvas{display:block;transform-origin:50% 92%;will-change:filter}
+.live2d-pet.locomotion-idle .live2d-canvas{animation:live2d-idle 4.8s ease-in-out infinite}
+.live2d-pet.locomotion-walk-left .live2d-canvas,.live2d-pet.locomotion-walk-right .live2d-canvas{animation:live2d-walk .46s ease-in-out infinite alternate}
+.live2d-pet.locomotion-dragged .live2d-canvas{animation:none;filter:drop-shadow(0 12px 8px rgba(42,31,98,.18))}
+.live2d-pet.locomotion-falling .live2d-canvas{animation:none;filter:drop-shadow(0 16px 7px rgba(42,31,98,.13))}
+.live2d-pet.locomotion-landing .live2d-canvas{animation:none;filter:drop-shadow(0 5px 11px rgba(42,31,98,.24))}
+.live2d-pet.is-speaking .live2d-canvas{filter:drop-shadow(0 0 9px rgba(135,111,246,.22))}
+.live2d-pet.action-wave .live2d-canvas,.live2d-pet.action-nod .live2d-canvas,.live2d-pet.action-head-tilt .live2d-canvas{filter:drop-shadow(0 0 7px rgba(135,111,246,.18))}
+.live2d-pet.action-shake-head .live2d-canvas,.live2d-pet.action-shy .live2d-canvas{filter:drop-shadow(0 4px 8px rgba(88,69,155,.16))}
+.live2d-pet.action-jump .live2d-canvas,.live2d-pet.action-cheer .live2d-canvas,.live2d-pet.action-dance .live2d-canvas,.live2d-pet.action-surprised .live2d-canvas{filter:drop-shadow(0 0 11px rgba(255,137,174,.25))}
+.live2d-pet.action-sit .live2d-canvas,.live2d-pet.action-stretch .live2d-canvas,.live2d-pet.action-comfort .live2d-canvas,.live2d-pet.action-sleep .live2d-canvas{filter:drop-shadow(0 7px 9px rgba(70,54,138,.16))}
 .pet-model{position:absolute;left:50%;bottom:10px;width:150px;height:190px;transform:translateX(-50%);pointer-events:none}.pet-model .pet-body{position:absolute;left:20px;right:20px;top:42px;bottom:22px;border-radius:48% 48% 42% 42%;background:linear-gradient(145deg,#a89cff,#6856d1);box-shadow:0 14px 28px rgba(59,43,135,.24)}.pet-model .pet-face{position:absolute;inset:0}.pet-model .eye{position:absolute;top:43px;width:15px;height:20px;border-radius:50%;background:#302762}.pet-model .eye-left{left:28px}.pet-model .eye-right{right:28px}.pet-model .mouth{position:absolute;left:50%;top:72px;width:18px;height:9px;transform:translateX(-50%);border-bottom:4px solid #302762;border-radius:50%}.pet-model .pet-antenna{position:absolute;z-index:2;left:50%;top:18px;width:12px;height:35px;transform:translateX(-50%);border-radius:8px;background:#7463e8}.pet-model .pet-antenna span{position:absolute;left:-4px;top:-7px;width:20px;height:20px;border-radius:50%;background:#ff89ae;box-shadow:0 0 14px #ff89ae}.pet-model .pet-shadow{position:absolute;left:18px;right:18px;bottom:4px;height:17px;border-radius:50%;background:rgba(48,33,103,.18);filter:blur(6px)}.pet-model.state-speaking .mouth{height:17px;border:0;border-radius:50%;background:#302762;animation:talk .2s infinite alternate}
 .pet-model .eye{transform:translate(calc(var(--focus-x,0) * 3px),calc(var(--focus-y,0) * -2px));transition:transform .08s linear}
+.pet-model[data-action="wave"] .pet-body{animation:live2d-wave .4s ease-in-out 4 alternate}
+.pet-model[data-action="nod"] .pet-body{animation:pet-action-nod .45s ease-in-out 2 alternate}
+.pet-model[data-action="shake-head"] .pet-body{animation:pet-action-shake .3s ease-in-out 3 alternate}
+.pet-model[data-action="head-tilt"] .pet-body{animation:pet-action-head-tilt 1.2s ease-in-out}
+.pet-model[data-action="jump"] .pet-body{animation:live2d-jump .6s cubic-bezier(.25,.8,.35,1) 2}
+.pet-model[data-action="cheer"] .pet-body{animation:pet-action-cheer .55s ease-in-out 3 alternate}
+.pet-model[data-action="dance"] .pet-body{animation:live2d-dance .4s ease-in-out 6 alternate}
+.pet-model[data-action="sit"] .pet-body{animation:live2d-sit 2s ease forwards}
+.pet-model[data-action="stretch"] .pet-body{animation:pet-action-stretch 1.6s ease-in-out}
+.pet-model[data-action="shy"] .pet-body{animation:pet-action-shy 1.6s ease-in-out}
+.pet-model[data-action="comfort"] .pet-body{animation:pet-action-comfort .8s ease-in-out 3 alternate}
+.pet-model[data-action="sleep"] .pet-body{animation:live2d-sleep 3.5s ease-in-out forwards}
+.pet-model[data-action="surprised"] .pet-body{animation:live2d-surprised .45s ease-out 2 alternate}
 .pet-toast { position:absolute; z-index:40; left:50%; bottom:12px; max-width:250px; transform:translateX(-50%); padding:7px 11px; border-radius:10px; color:white; background:rgba(44,37,71,.9); box-shadow:0 7px 20px rgba(35,28,70,.2); font-size:9px; text-align:center; }
 
 /* Separate settings / memory window */
@@ -70,14 +95,19 @@ fieldset{border:1px solid var(--line);border-radius:14px;margin:0 0 10px;padding
 @keyframes pulse{to{transform:scale(1.12);box-shadow:0 0 13px rgba(234,98,140,.55)}}
 @keyframes live2d-idle{0%,100%{transform:translateY(0) rotate(-.2deg)}50%{transform:translateY(-3px) rotate(.2deg) scale(1.003)}}
 @keyframes live2d-walk{from{transform:translateY(0) rotate(-1.4deg)}to{transform:translateY(-7px) rotate(1.4deg)}}
-@keyframes live2d-drag{from{transform:translateY(-4px) rotate(-2deg)}to{transform:translateY(3px) rotate(2deg)}}
-@keyframes live2d-fall{0%{transform:translateY(-22px) scale(.97)}75%{transform:translateY(4px) scale(1.02,.96)}100%{transform:none}}
 @keyframes live2d-wave{from{transform:rotate(-2deg)}to{transform:rotate(3deg)}}
 @keyframes live2d-jump{0%,100%{transform:translateY(0) scale(1)}45%{transform:translateY(-34px) scale(.98,1.03)}75%{transform:translateY(3px) scale(1.03,.96)}}
 @keyframes live2d-dance{from{transform:translateX(-7px) rotate(-4deg)}to{transform:translateX(7px) rotate(4deg)}}
 @keyframes live2d-sit{to{transform:translateY(18px) scale(1.04,.92)}}
 @keyframes live2d-sleep{20%,100%{transform:translateY(13px) rotate(-3deg) scale(.98);filter:saturate(.82) brightness(.94)}}
 @keyframes live2d-surprised{to{transform:translateY(-8px) scale(1.08)}}
+@keyframes pet-action-nod{from{transform:translateY(-2px) scaleY(1.02)}to{transform:translateY(4px) scaleY(.97)}}
+@keyframes pet-action-shake{from{transform:translateX(-5px) rotate(-2deg)}to{transform:translateX(5px) rotate(2deg)}}
+@keyframes pet-action-head-tilt{35%,75%{transform:rotate(5deg)}}
+@keyframes pet-action-cheer{from{transform:translateY(0) scale(1)}to{transform:translateY(-11px) scale(1.04)}}
+@keyframes pet-action-stretch{45%,75%{transform:translateY(-7px) scale(.96,1.1)}}
+@keyframes pet-action-shy{35%,80%{transform:translateX(-4px) rotate(-3deg) scale(.98)}}
+@keyframes pet-action-comfort{from{transform:translateX(-2px) rotate(-1deg)}to{transform:translateX(2px) rotate(1deg) scale(1.015)}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 
 /* Pet dialogue dock interaction enhancement (kept CSS-only to isolate it from voice work). */

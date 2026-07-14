@@ -11,8 +11,13 @@ import {
 import type { Live2DModelAssetPackage, PetAction, PetEmotion, PetFocus, PetMotionFrame } from "../common/types";
 import {
   advanceFocus,
+  computePetTransform,
+  motionDurationMs,
+  proceduralActionDurationMs,
   resolveFocusBindings,
+  resolveActionMotion,
   type FocusBindings,
+  type PetTransform,
 } from "./live2d-interaction";
 import type { PetModelAdapter } from "./model-adapter";
 
@@ -50,56 +55,6 @@ function createModelSettings(assets: Live2DModelAssetPackage): CubismModelSettin
   return settings;
 }
 
-const ACTION_INDEX: Record<PetAction, number> = {
-  wave: 0,
-  jump: 1,
-  dance: 2,
-  sit: 3,
-  sleep: 4,
-  surprised: 5,
-};
-
-const ACTION_DURATION: Record<PetAction, number> = {
-  wave: 1600,
-  jump: 1200,
-  dance: 2400,
-  sit: 2000,
-  sleep: 3500,
-  surprised: 900,
-};
-
-interface ActionMotion {
-  groups: string[];
-  index: number;
-}
-
-const BUNDLED_ACTION_MOTIONS: Record<string, Record<PetAction, ActionMotion>> = {
-  hiyori: {
-    wave: { groups: ["Idle"], index: 4 },
-    jump: { groups: ["Idle"], index: 7 },
-    dance: { groups: ["Idle"], index: 5 },
-    sit: { groups: ["Idle"], index: 1 },
-    sleep: { groups: ["Idle"], index: 3 },
-    surprised: { groups: ["Idle"], index: 6 },
-  },
-  mao: {
-    wave: { groups: ["TapBody"], index: 0 },
-    jump: { groups: ["TapBody"], index: 3 },
-    dance: { groups: ["TapBody"], index: 4 },
-    sit: { groups: ["TapBody"], index: 1 },
-    sleep: { groups: ["TapBody"], index: 2 },
-    surprised: { groups: ["TapBody"], index: 5 },
-  },
-  wanko: {
-    wave: { groups: ["TapBody"], index: 1 },
-    jump: { groups: ["TapBody"], index: 3 },
-    dance: { groups: ["Shake", "TapBody"], index: 0 },
-    sit: { groups: ["TapBody"], index: 0 },
-    sleep: { groups: ["Idle"], index: 3 },
-    surprised: { groups: ["TapBody"], index: 5 },
-  },
-};
-
 const MAO_EXPRESSIONS: Record<PetEmotion, number> = {
   idle: 0,
   happy: 1,
@@ -134,6 +89,18 @@ const BUNDLED_FOCUS_PROFILES: Record<string, FocusProfile> = {
   wanko: { eye: 0, headX: 18, headY: 12, headZ: 4, body: 6, ear: 0.4 },
 };
 
+const TRANSFORM_KEYS: Array<keyof PetTransform> = [
+  "translateX", "translateY", "rotation", "scaleX", "scaleY",
+];
+
+function neutralTransform(): PetTransform {
+  return { translateX: 0, translateY: 0, rotation: 0, scaleX: 1, scaleY: 1 };
+}
+
+function zeroTransform(): PetTransform {
+  return { translateX: 0, translateY: 0, rotation: 0, scaleX: 0, scaleY: 0 };
+}
+
 /** Cubism 3/4/5 renderer backed by PixiJS 8. Desktop position remains owned by Electron. */
 export class Live2DPetAdapter implements PetModelAdapter {
   readonly id: string;
@@ -149,12 +116,18 @@ export class Live2DPetAdapter implements PetModelAdapter {
     state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
   };
   private action?: PetAction;
+  private actionUsesMotion = false;
+  private actionStartedAt = 0;
   private actionTimer?: number;
   private speakTimer?: number;
   private speechUntil = 0;
   private focus: PetFocus = { x: 0, y: 0 };
   private appliedFocus: PetFocus = { x: 0, y: 0 };
   private focusBindings: FocusBindings = {};
+  private landingStartedAt?: number;
+  private spring = neutralTransform();
+  private springVelocity = zeroTransform();
+  private lastTransformAt = 0;
 
   constructor(assets: Live2DModelAssetPackage) {
     this.assets = assets;
@@ -223,9 +196,14 @@ export class Live2DPetAdapter implements PetModelAdapter {
 
   setMotion(frame: PetMotionFrame): void {
     this.root?.classList.remove(`locomotion-${this.motion.state}`);
+    if (frame.state === "landing" && this.motion.state !== "landing") {
+      this.landingStartedAt = performance.now();
+    } else if (frame.state !== "landing") {
+      this.landingStartedAt = undefined;
+    }
     this.motion = frame;
     this.root?.classList.add(`locomotion-${frame.state}`);
-    this.applyTransform();
+    this.updateTransform(performance.now());
   }
 
   setFocus(focus: PetFocus): void {
@@ -241,20 +219,25 @@ export class Live2DPetAdapter implements PetModelAdapter {
     if (this.actionTimer) window.clearTimeout(this.actionTimer);
     this.model.stopMotions();
     this.action = action;
+    this.actionStartedAt = performance.now();
     this.root.classList.add(`action-${action}`);
-    const motion = BUNDLED_ACTION_MOTIONS[this.assets.info.id]?.[action] ?? {
-      groups: ["TapBody", "Tap", "Touch", "Action"],
-      index: ACTION_INDEX[action],
-    };
-    this.playMotion(motion.groups, motion.index, MotionPriority.FORCE);
+    const motion = resolveActionMotion(this.assets.info.id, action, this.assets.info.motionGroups);
+    this.actionUsesMotion = Boolean(
+      motion && this.playMotion([motion.group], motion.index, MotionPriority.FORCE),
+    );
+    const duration = motion && this.actionUsesMotion
+      ? this.readMotionDuration(motion.group, motion.index) ?? proceduralActionDurationMs(action)
+      : proceduralActionDurationMs(action);
     this.actionTimer = window.setTimeout(() => {
       this.root?.classList.remove(`action-${action}`);
       if (this.action === action) this.action = undefined;
+      this.actionUsesMotion = false;
+      this.actionStartedAt = 0;
       this.model?.stopMotions();
-      this.applyTransform();
+      this.updateTransform(performance.now());
       this.applyEmotionExpression();
       this.playIdle();
-    }, ACTION_DURATION[action]);
+    }, duration);
     return true;
   }
 
@@ -298,6 +281,13 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.app = undefined;
     this.focusBindings = {};
     this.appliedFocus = { x: 0, y: 0 };
+    this.action = undefined;
+    this.actionUsesMotion = false;
+    this.actionStartedAt = 0;
+    this.landingStartedAt = undefined;
+    this.spring = neutralTransform();
+    this.springVelocity = zeroTransform();
+    this.lastTransformAt = 0;
     this.root?.remove();
     this.root = undefined;
   }
@@ -320,12 +310,13 @@ export class Live2DPetAdapter implements PetModelAdapter {
     void this.model.motion(group, index, MotionPriority.IDLE, { loop: true }).catch(() => false);
   }
 
-  private playMotion(groups: string[], index: number, priority: MotionPriority): void {
+  private playMotion(groups: string[], index: number, priority: MotionPriority): boolean {
     const group = this.findMotionGroup(...groups);
-    if (!group || !this.model) return;
+    if (!group || !this.model) return false;
     const count = this.assets.info.motionGroups[group] ?? 0;
-    if (!count) return;
-    void this.model.motion(group, index % count, priority, { loop: false }).catch(() => false);
+    if (!Number.isInteger(index) || index < 0 || index >= count) return false;
+    void this.model.motion(group, index, priority, { loop: false }).catch(() => false);
+    return true;
   }
 
   private applyEmotionExpression(): void {
@@ -341,7 +332,7 @@ export class Live2DPetAdapter implements PetModelAdapter {
     const bounds = this.getVisibleBounds(model);
     this.baseScale = Math.min((this.width * 0.94) / bounds.width, (this.height * 0.98) / bounds.height);
     model.pivot.set(bounds.centerX, bounds.bottom);
-    this.applyTransform();
+    this.applySpringTransform();
   }
 
   private getVisibleBounds(model: Live2DModel<CubismInternalModel>): {
@@ -379,17 +370,36 @@ export class Live2DPetAdapter implements PetModelAdapter {
     };
   }
 
-  private applyTransform(): void {
+  private updateTransform(now: number): void {
+    const landingElapsed = this.landingStartedAt === undefined ? 0 : now - this.landingStartedAt;
+    const proceduralAction = this.action && !this.actionUsesMotion ? this.action : undefined;
+    const actionElapsed = this.actionStartedAt ? now - this.actionStartedAt : 0;
+    const target = computePetTransform(this.motion, proceduralAction, actionElapsed, landingElapsed);
+    const elapsed = this.lastTransformAt ? Math.max(1, Math.min(50, now - this.lastTransformAt)) : 16.67;
+    this.lastTransformAt = now;
+    const step = elapsed / 16.67;
+    const damping = Math.pow(0.68, step);
+    for (const key of TRANSFORM_KEYS) {
+      const velocity = (this.springVelocity[key] + (target[key] - this.spring[key]) * 0.2 * step) * damping;
+      this.springVelocity[key] = velocity;
+      this.spring[key] += velocity * step;
+    }
+    this.applySpringTransform();
+  }
+
+  private applySpringTransform(): void {
     const model = this.model;
     if (!model) return;
     const facing = this.motion.state === "walk-left" ? -1 : 1;
-    model.scale.set(this.baseScale * facing, this.baseScale);
-    model.position.set(this.width / 2, this.height - 2);
-    model.rotation = this.motion.state === "dragged"
-      ? -0.08
-      : this.motion.state === "falling"
-        ? 0.1
-        : 0;
+    model.scale.set(
+      this.baseScale * facing * this.spring.scaleX,
+      this.baseScale * this.spring.scaleY,
+    );
+    model.position.set(
+      this.width / 2 + this.spring.translateX,
+      this.height - 2 + this.spring.translateY,
+    );
+    model.rotation = this.spring.rotation;
   }
 
   private applyLipSync(): void {
@@ -419,6 +429,30 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.appliedFocus = advanceFocus(this.appliedFocus, this.focus, 0.16);
     this.applyFocusParameters();
     this.applyLipSync();
+    this.updateTransform(performance.now());
+  }
+
+  private readMotionDuration(group: string, index: number): number | undefined {
+    try {
+      const settingsAsset = this.assets.files.find((asset) => asset.path.toLowerCase().endsWith(".model3.json"));
+      if (!settingsAsset) return undefined;
+      const settings = JSON.parse(new TextDecoder().decode(decodeBase64(settingsAsset.base64))) as {
+        FileReferences?: { Motions?: Record<string, Array<{ File?: unknown }>> };
+      };
+      const groups = settings.FileReferences?.Motions;
+      if (!groups) return undefined;
+      const actualGroup = Object.keys(groups).find((candidate) => candidate.toLowerCase() === group.toLowerCase());
+      const file = actualGroup ? groups[actualGroup]?.[index]?.File : undefined;
+      if (typeof file !== "string") return undefined;
+      const base = new URL(settingsAsset.path, "https://memory-pet.invalid/");
+      const resolved = decodeURIComponent(new URL(file, base).pathname.replace(/^\/+/, ""));
+      const motionAsset = this.assets.files.find((asset) => asset.path === resolved);
+      if (!motionAsset) return undefined;
+      const motion = JSON.parse(new TextDecoder().decode(decodeBase64(motionAsset.base64))) as unknown;
+      return motionDurationMs(motion);
+    } catch {
+      return undefined;
+    }
   }
 
   private applyFocusParameters(): void {
