@@ -12,12 +12,34 @@ const MEMORY_KIND_RETRIEVAL_TERMS: Record<MemoryRecord["kind"], string> = {
   reflection: "近期反思",
 };
 
+const HISTORICAL_TIME_CUES = /以前|过去|之前|曾经|原来|原先|当时|此前|最初|原计划/;
+const CURRENT_TIME_CUES = /现在|目前|如今|当前|现阶段|最新|改为|改成|更正/;
+const COMPARISON_TIME_CUES = /变化|变更|改变|前后|对比|历程|从.+(?:改到|改为|改成|变到|变为|变成|换到|换为|换成|搬到|转到).+/;
+const HISTORICAL_MEMORY_PREFIX = /^(?:用户[:：]?\s*)?(?:我(?:的)?\s*)?(?:以前|过去|之前|曾经|原来|原先|当时|此前|最初|原计划)/;
+
+export type MemoryTemporalView = "current" | "historical" | "comparison";
+
 export function clamp(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
 }
 
 export function normalizeText(value: string): string {
   return value.toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+export function temporalViewForQuery(query: string): MemoryTemporalView {
+  const value = normalizeText(query);
+  const historical = HISTORICAL_TIME_CUES.test(value);
+  const current = CURRENT_TIME_CUES.test(value);
+  if (COMPARISON_TIME_CUES.test(value) || (historical && current)) return "comparison";
+  return historical ? "historical" : "current";
+}
+
+export function memoryMatchesTemporalView(memory: MemoryRecord, view: MemoryTemporalView): boolean {
+  if (view === "comparison" || (memory.kind !== "fact" && memory.kind !== "preference")) return true;
+  const value = normalizeText(`${memory.summary} ${memory.content}`);
+  const historical = HISTORICAL_MEMORY_PREFIX.test(value) && !CURRENT_TIME_CUES.test(value);
+  return view === "historical" ? historical : !historical;
 }
 
 export function tokenize(value: string): Set<string> {

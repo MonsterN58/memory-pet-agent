@@ -38,7 +38,7 @@ flowchart LR
 - `AgentService`：检索记忆、注入结构化人格状态、生成回复、主动开场、L2 提炼和模型人格证据提取。
 - `HeartbeatService`：定时器、迁移/整理触发、主动聊天约束和心跳审计。
 - `MemoryEngine`：L1 缓冲、L2 事件化、L3 候选生成与上下文检索。
-- `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释检索、串行写入、临时文件替换和损坏文件隔离。
+- `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释完整检索、聊天时态视图检索、串行写入、临时文件替换和损坏文件隔离。
 - `PersonalityEngine`：从当前对话提取本地信号，在心跳中复盘新 L2，合并连续特质分数、冲突反馈、置信度与成长阶段。
 - `PersonalityStore`：独立持久化人格状态和已复盘 L2 ID；使用临时文件替换，损坏时隔离并回到空白人格。
 - `ModelStore`：在主进程校验并复制用户选择的 Cubism `.model3.json` 资源，持久化当前模型，并向宠物窗口返回不含本地路径的受限资源包。
@@ -181,9 +181,11 @@ score = 文本相关度 × 5
 
 检索评分使用独立于 Jaccard 去重的 token 视图：保留中文相邻双字和有意义单字，移除有限的高频中文虚词；单字主题（例如“猫”“茶”）仍可命中。索引还给 kind 追加固定的本地化词，例如 `preference → 近期偏好`、`fact → 近期重要的事`、`episode → 近期计划待跟进话题`，让主动聊天的通用关注点查询保持可用。Repository 在排序前要求 `textRelevance >= 0.75`（即原始查询 token 命中比例至少约 15%），低于门槛的记录不会返回，也不会更新 `accessedAt / accessCount`。因此重要度、新鲜度和历史访问只能在已有文本或类型证据的候选之间调整顺序，不能把零相关记忆补进普通聊天、主动聊天或面板搜索。
 
-`scoreMemoryBreakdown()` 把公式拆成 `textRelevance / importance / recency / frequency / total` 五项。普通 Agent 上下文仍通过 `retrieve()` 只获取 `MemoryRecord[]`；控制面板搜索使用 `retrieveWithScores()` 获取记录和评分明细，因此“为何召回”不会进入模型提示词，也不会改变检索排序。
+`scoreMemoryBreakdown()` 把公式拆成 `textRelevance / importance / recency / frequency / total` 五项。控制面板搜索使用 `retrieveWithScores()` 获取完整相关记录和评分明细，因此“为何召回”不会进入模型提示词，也不会改变检索排序。普通 Agent 上下文改用 `retrieveForContext()`：复用同一评分和最低证据门槛，然后在截断及访问强化之前施加查询时态视图。
 
-`tests/fixtures/memory-quality-cases.ts` 提供 20 个手写中文质量 fixture，偏好更新、事实冲突、跨天跟进、持久化提示注入和用户纠错各 4 个。`npm run test:memory-quality` 使用临时版本 1 JSON 和真实 `MemoryRepository` 验证当前值排序、无关记录过滤、旧值不泄漏以及被过滤记录不获得访问强化；不依赖在线模型、上游数据集或真实用户数据。当前契约只建立检索层基线，自动冲突消解、失效历史标记、同义词与代词推理仍属于后续工作。
+时态视图只处理 `fact / preference`，并使用确定性的显式中文线索：默认以及“现在 / 目前 / 最新 / 改为 / 更正”查询采用当前视图，排除陈述开头（可带“用户 / 我 / 我的”前缀）只有“以前 / 过去 / 曾经 / 原计划”等历史线索的记录；纯历史查询只保留明确历史记录；同时包含新旧线索、“变化 / 前后 / 对比”，或含“改 / 变 / 换 / 搬 / 转”语义的“从…到…”查询采用比较视图并保留两者。普通空间起止表达不会触发比较视图，正文中作为话题出现的“过去”等词也不会把当前记忆标成历史。L1 与 `dialogue / episode / reflection` 不参与门控。被排除的记录不会更新 `accessedAt / accessCount`，也不会出现在 `AgentService` 的模型提示和 `memoryRefs` 中；面板仍能看到并修正完整历史。
+
+`tests/fixtures/memory-quality-cases.ts` 提供 20 个手写中文质量 fixture，偏好更新、事实冲突、跨天跟进、持久化提示注入和用户纠错各 4 个。`npm run test:memory-quality` 使用临时版本 1 JSON 和真实 `MemoryRepository` 验证完整面板排序、聊天当前/历史/比较视图、无关记录过滤以及访问强化隔离；还通过本机回环 Chat Completions 服务驱动真实 `AgentService.respond()`，确认当前偏好进入最终回复而旧偏好不进入模型上下文或引用。测试不依赖外部网络、在线模型、上游数据集或真实用户数据。显式时态门控不推断无时态词的隐式冲突，持久化失效标记、版本链、用户审核以及同义词与代词推理仍属于后续工作。
 
 控制面板通过 `memory:update` 和 `memory:delete` 两个白名单 IPC 管理持久记忆。主进程只接受当前 PanelWindow 发起的请求，并校验 UUID、L2/L3 层级、1～2000 字内容、允许类型以及 0～1 重要度。修正保留 `id / tier / createdAt / accessedAt / accessCount / sourceIds / tags`，重算摘要并更新 `updatedAt`；删除只移除目标记录，不级联修改其他来源或派生记忆。L1 不提供写接口。若心跳正在等待模型提炼，写入前会再次比较来源版本；期间修正或删除任何来源都会丢弃整批旧候选，避免过期内容回写 L3。
 
@@ -203,7 +205,7 @@ score = 文本相关度 × 5
 
 - 2D：在现有 Live2D 模型仓库上增加自定义缩放、expression 选择、历史导入模型切换和删除；继续通过 `PetModelAdapter` 保持 Agent 核心与渲染引擎解耦。
 - 离线语音增强：当前 sherpa-onnx Zipformer 已提供稳定本地 ASR；后续可把整段识别改为增量传输与部分结果，并增加本地神经 TTS、真实音频口型时序和模型版本/删除 UI。
-- 记忆质量：在现有 20 例检索契约上增加回复级偏好遵循、自动更新/冲突标记和过期值泄漏指标，再评估混合检索。
+- 记忆质量：在现有 20 例检索与回复级时态门控契约上增加持久化版本链、自动更新/冲突标记、用户审核和多次变更压力指标，再评估混合检索。
 - 存储：数据量上升后把 `MemoryRepository` 替换成 SQLite + FTS/向量扩展，保持 `MemoryEngine` API 不变。
 - 工具能力：在 `AgentService` 前增加显式授权的 Tool Router，不把工具执行权限隐含在普通聊天里。
 - 多模态：只在用户授权时采集屏幕或摄像头，并把感知结果作为有时效的 L1 数据，而不是默认长期保存。

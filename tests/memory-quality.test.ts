@@ -159,3 +159,31 @@ test("用户纠错后只召回新值", async (context) => {
     );
   }
 });
+
+test("聊天当前视图排除明确历史偏好和事实", async (context) => {
+  for (const fixtureCase of [...preferenceUpdateCases, ...factConflictCases]) {
+    const repository = await repositoryFor(context, fixtureCase.memories);
+    const results = await repository.retrieveForContext(fixtureCase.query, fixtureCase.memories.length);
+    assert.deepEqual(results.map((memory) => memory.content), [fixtureCase.expectedContents[0]], fixtureCase.name);
+    const accessCounts = new Map(repository.getL3().map((memory) => [memory.content, memory.accessCount]));
+    assert.equal(accessCounts.get(fixtureCase.expectedContents[0]!), 1, fixtureCase.name);
+    assert.equal(accessCounts.get(fixtureCase.expectedContents[1]!), 0, fixtureCase.name);
+  }
+});
+
+test("聊天历史视图只返回明确历史证据", async (context) => {
+  const fixtureCase = preferenceUpdateCases[0]!;
+  const repository = await repositoryFor(context, fixtureCase.memories);
+  const results = await repository.retrieveForContext("以前喜欢喝什么", fixtureCase.memories.length);
+  assert.deepEqual(results.map((memory) => memory.content), ["以前喜欢喝咖啡"]);
+});
+
+test("聊天比较视图同时保留当前和历史证据", async (context) => {
+  const fixtureCase = preferenceUpdateCases[0]!;
+  const repository = await repositoryFor(context, fixtureCase.memories);
+  const results = await repository.retrieveForContext(
+    "以前和现在喜欢喝什么，有什么变化",
+    fixtureCase.memories.length,
+  );
+  assert.deepEqual(results.map((memory) => memory.content), fixtureCase.expectedContents);
+});

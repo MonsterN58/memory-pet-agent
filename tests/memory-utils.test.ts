@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { MemoryRecord } from "../src/common/types";
-import { jaccard, scoreMemory, scoreMemoryBreakdown, tokenize } from "../src/main/memory/memory-utils";
+import {
+  jaccard,
+  memoryMatchesTemporalView,
+  scoreMemory,
+  scoreMemoryBreakdown,
+  temporalViewForQuery,
+  tokenize,
+} from "../src/main/memory/memory-utils";
 
 function memory(content: string, importance: number, updatedAt = new Date().toISOString()): MemoryRecord {
   return {
@@ -72,4 +79,28 @@ test("通用主动话题查询可以通过记忆类型召回候选", () => {
 
   assert(scoreMemoryBreakdown(preference, query).textRelevance >= 0.75);
   assert(scoreMemoryBreakdown(fact, query).textRelevance >= 0.75);
+});
+
+test("普通起止路线不会被误判为记忆变化比较", () => {
+  assert.equal(temporalViewForQuery("从南京到杭州怎么坐车"), "current");
+  assert.equal(temporalViewForQuery("偏好从咖啡改到花茶"), "comparison");
+});
+
+test("历史词只有位于事实或偏好陈述开头时才表示过期", () => {
+  const currentPreference = {
+    ...memory("我喜欢研究过去时", 0.8),
+    kind: "preference" as const,
+  };
+  const historicalPreference = {
+    ...memory("我以前喜欢喝咖啡", 0.8),
+    kind: "preference" as const,
+  };
+  const historicalEpisode = {
+    ...memory("以前计划周末露营", 0.8),
+    kind: "episode" as const,
+  };
+
+  assert.equal(memoryMatchesTemporalView(currentPreference, "current"), true);
+  assert.equal(memoryMatchesTemporalView(historicalPreference, "current"), false);
+  assert.equal(memoryMatchesTemporalView(historicalEpisode, "current"), true);
 });

@@ -9,7 +9,14 @@ import type {
   MemorySearchResult,
   MemoryUpdateInput,
 } from "../../common/types";
-import { clamp, jaccard, scoreMemoryBreakdown, summarizeText } from "./memory-utils";
+import {
+  clamp,
+  jaccard,
+  memoryMatchesTemporalView,
+  scoreMemoryBreakdown,
+  summarizeText,
+  temporalViewForQuery,
+} from "./memory-utils";
 
 interface MemoryMeta {
   lastInteractionAt?: string;
@@ -157,22 +164,23 @@ export class MemoryRepository {
 
   async retrieveWithScores(query: string, limit = 6): Promise<MemorySearchResult[]> {
     const now = Date.now();
-    const ranked = [...this.database.l3, ...this.database.l2]
-      .map((memory) => ({ memory, score: scoreMemoryBreakdown(memory, query, now) }))
-      .filter(({ score }) => score.textRelevance >= MIN_RETRIEVAL_TEXT_RELEVANCE)
-      .sort((a, b) => b.score.total - a.score.total)
-      .slice(0, limit);
-    const accessedAt = new Date(now).toISOString();
-    for (const { memory } of ranked) {
-      memory.accessCount += 1;
-      memory.accessedAt = accessedAt;
-    }
-    if (ranked.length > 0) await this.persist();
+    const ranked = this.rank(query, now).slice(0, limit);
+    await this.markAccessed(ranked, now);
     return clone(ranked);
   }
 
   async retrieve(query: string, limit = 6): Promise<MemoryRecord[]> {
     return (await this.retrieveWithScores(query, limit)).map(({ memory }) => memory);
+  }
+
+  async retrieveForContext(query: string, limit = 6): Promise<MemoryRecord[]> {
+    const now = Date.now();
+    const view = temporalViewForQuery(query);
+    const ranked = this.rank(query, now)
+      .filter(({ memory }) => memoryMatchesTemporalView(memory, view))
+      .slice(0, limit);
+    await this.markAccessed(ranked, now);
+    return clone(ranked.map(({ memory }) => memory));
   }
 
   async recordHeartbeat(event: HeartbeatEvent): Promise<void> {
@@ -183,6 +191,23 @@ export class MemoryRepository {
 
   async flush(): Promise<void> {
     await this.writeQueue;
+  }
+
+  private rank(query: string, now: number): MemorySearchResult[] {
+    return [...this.database.l3, ...this.database.l2]
+      .map((memory) => ({ memory, score: scoreMemoryBreakdown(memory, query, now) }))
+      .filter(({ score }) => score.textRelevance >= MIN_RETRIEVAL_TEXT_RELEVANCE)
+      .sort((a, b) => b.score.total - a.score.total);
+  }
+
+  private async markAccessed(ranked: MemorySearchResult[], now: number): Promise<void> {
+    if (ranked.length === 0) return;
+    const accessedAt = new Date(now).toISOString();
+    for (const { memory } of ranked) {
+      memory.accessCount += 1;
+      memory.accessedAt = accessedAt;
+    }
+    await this.persist();
   }
 
   private persist(): Promise<void> {
