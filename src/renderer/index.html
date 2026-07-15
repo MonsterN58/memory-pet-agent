@@ -109,6 +109,11 @@
           <button id="heartbeat-button" type="button" class="secondary-button">立即心跳整理</button>
           <button id="open-data-button-memory" type="button" class="secondary-button">打开数据目录</button>
         </div>
+        <article class="heartbeat-insight-card" aria-live="polite">
+          <header><strong>最近一次心跳</strong><time id="heartbeat-insight-time">尚未运行</time></header>
+          <p id="heartbeat-insight-reflection">她会在这里留下对自己、你们的关系和下一次陪伴方式的简短复盘。</p>
+          <small id="heartbeat-insight-focus">心跳只保存受限摘要，不保存屏幕图片、窗口标题或视觉正文。</small>
+        </article>
         <form id="remember-form" class="inline-form">
           <input id="remember-input" maxlength="2000" placeholder="明确保存一件需要记住的事" />
           <button type="submit">记住</button>
@@ -159,6 +164,16 @@
           </fieldset>
 
           <fieldset>
+            <legend>屏幕识图 API（OpenAI 兼容）</legend>
+            <label class="switch-row"><span>启用独立识图服务</span><input id="setting-vision-enabled" type="checkbox" /></label>
+            <label>识图 Base URL<input id="setting-vision-base-url" type="url" placeholder="https://api.openai.com/v1" /></label>
+            <label>视觉模型<input id="setting-vision-model" placeholder="支持 image_url 的视觉模型名称" /></label>
+            <label>识图 API Key <span id="vision-key-state" class="field-note"></span><input id="setting-vision-api-key" type="password" autocomplete="off" placeholder="留空表示不修改" /></label>
+            <label class="switch-row danger"><span>清除已保存的识图 Key</span><input id="setting-clear-vision-key" type="checkbox" /></label>
+            <p class="model-import-note">识图服务只接收本轮压缩屏幕缩略图，并返回经过限制的当前任务、忙碌程度和帮助机会；聊天 LLM 不再接收图片，三组 API Key 分开加密保存。</p>
+          </fieldset>
+
+          <fieldset>
             <legend>电脑协作、网页共读与权限</legend>
             <label class="switch-row"><span>启用电脑协作</span><input id="setting-computer-enabled" type="checkbox" /></label>
             <label class="switch-row"><span>启用浏览器右键共读桥接</span><input id="setting-browser-context" type="checkbox" /></label>
@@ -205,9 +220,10 @@
           <fieldset>
             <legend>桌面感知与关心</legend>
             <label class="switch-row"><span>允许 Agent / 心跳按需理解一次屏幕</span><input id="setting-screen-awareness" type="checkbox" /></label>
-            <p class="model-import-note">默认关闭。开启后，只有普通聊天明确需要桌面情境并调用 <code>desktop_observe</code>，或非启动心跳进行思考时，才截取一张压缩缩略图发送到你配置的聊天模型端点；原图和缩略图不会写入本地文件。模型需支持图像输入。</p>
+            <p class="model-import-note">默认关闭。开启后，只有普通聊天明确需要桌面情境并调用 <code>desktop_observe</code>，或心跳确实需要判断当前情境时，才截取一张压缩缩略图发送到上方独立识图端点；原图和缩略图不会写入本地文件。</p>
             <label class="switch-row"><span>本机检测可见应用与新启动活动</span><input id="setting-process-awareness" type="checkbox" /></label>
-            <p class="model-import-note">默认关闭。开启后，Agent / 心跳使用固定参数的 Windows <code>tasklist.exe</code> 读取可见窗口，只映射为“浏览网页、写代码、处理文档”等已知粗粒度类别；窗口标题不会发送给模型或写入档案。重复出现的类别可能形成本机关系习惯。</p>
+            <label>活动检测间隔（分钟）<input id="setting-process-poll-minutes" type="number" min="1" max="60" /></label>
+            <p class="model-import-note">默认关闭。开启后，Agent / 心跳使用固定的本机只读进程查询，只保留“浏览网页、写代码、处理文档”等已知粗粒度类别；窗口标题、PID 和原始输出不会发送给模型或写入档案。活动变化可以唤醒一次心跳，连续轮询不会重复强化习惯。</p>
           </fieldset>
 
           <fieldset>
@@ -302,7 +318,7 @@
             <label class="switch-row"><span>始终置顶</span><input id="setting-always-on-top" type="checkbox" /></label>
           </fieldset>
 
-          <p class="privacy-note">记忆、人格证据、关系档案、设置、电脑协作审计和两组加密凭据保存在本机。项目内离线识别和本机朗读不上传语音或回复；Chromium 兼容识别可能使用联网服务。启用聊天模型时会向聊天端点发送当前输入、少量相关记忆、已形成的人格/关系状态，以及你明确共享的电脑上下文；开启屏幕理解后，普通聊天的桌面感知工具或非启动心跳可能把一张不落盘的当前屏幕缩略图发送到同一聊天端点。只有选择云端 TTS 时才会把助手回复发送到独立 TTS 端点。</p>
+          <p class="privacy-note">记忆、人格证据、关系档案、设置、电脑协作审计和聊天/识图/TTS 三组加密凭据保存在本机。项目内离线识别和本机朗读不上传语音或回复；Chromium 兼容识别可能使用联网服务。聊天端点只接收当前输入、少量相关记忆、已形成的人格/关系状态和你明确共享的电脑上下文；开启屏幕理解后，一张不落盘的压缩缩略图只发送到独立识图端点，聊天 LLM 只接收识图端点返回的受限情境摘要。只有选择云端 TTS 时，助手回复才会发送到独立 TTS 端点。</p>
           <div class="settings-actions">
             <button id="open-data-button" type="button" class="secondary-button">打开数据目录</button>
             <button type="submit" class="primary-button">保存设置</button>

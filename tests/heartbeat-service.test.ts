@@ -22,8 +22,17 @@ test("心跳按感知、复盘、整理、思考、单次主动开口的顺序�
   const screen: DesktopAwarenessSnapshot = {
     capturedAt: new Date().toISOString(),
     screenCaptureAttempted: true,
-    screen: { dataUrl: "data:image/jpeg;base64,DO_NOT_PERSIST", width: 640, height: 360 },
+    screenSharedWithProvider: true,
+    screenStatus: "completed",
+    visionAnalysis: {
+      sceneSummary: "SCREEN_DETAIL 用户似乎在编辑代码",
+      currentTask: "继续桌宠项目",
+      busyState: "focused",
+      helpOpportunity: "可以帮忙检查测试",
+      confidence: 0.72,
+    },
     processScanCompleted: true,
+    processStatus: "completed",
     applications: [{ kind: "coding", label: "编写或阅读代码", processes: ["code.exe"], newlyStarted: true }],
   };
   let thoughtInput: HeartbeatThoughtInput | undefined;
@@ -100,7 +109,7 @@ test("心跳按感知、复盘、整理、思考、单次主动开口的顺序�
   assert.equal(thoughtInput?.canReachOut, true);
   assert.equal(result.event.relationshipUpdates, 3);
   assert.equal(result.event.awareness?.screenSharedWithProvider, true);
-  assert.doesNotMatch(JSON.stringify(result.event), /DO_NOT_PERSIST|data:image|code\.exe/);
+  assert.doesNotMatch(JSON.stringify(result.event), /SCREEN_DETAIL|data:image|code\.exe/);
 });
 
 test("定时心跳不满足空闲策略时仍思考但不会从旁路主动聊天", async () => {
@@ -116,6 +125,7 @@ test("定时心跳不满足空闲策略时仍思考但不会从旁路主动聊�
     {
       getL2: () => [],
       getMeta: () => ({ lastInteractionAt: new Date().toISOString() }),
+      setMeta: async () => undefined,
       getRecentHeartbeats: () => [],
       recordHeartbeat: async () => undefined,
     } as unknown as MemoryRepository,
@@ -148,7 +158,10 @@ test("定时心跳不满足空闲策略时仍思考但不会从旁路主动聊�
       observe: async () => ({
         capturedAt: new Date().toISOString(),
         screenCaptureAttempted: false,
+        screenSharedWithProvider: false,
+        screenStatus: "disabled",
         processScanCompleted: false,
+        processStatus: "disabled",
         applications: [],
       }),
       promptText: () => "none",
@@ -167,6 +180,159 @@ test("定时心跳不满足空闲策略时仍思考但不会从旁路主动聊�
   assert.equal(proactiveCalls, 0);
   assert.match(result.event.skippedProactiveReason ?? "", /空闲/);
 });
+
+test("从未聊天的新用户会从首次心跳开始累计空闲时间并允许主动靠近", async () => {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  settings.heartbeat.idleMinutesBeforeChat = 1;
+  settings.heartbeat.quietHoursStart = 0;
+  settings.heartbeat.quietHoursEnd = 0;
+  const meta = { firstHeartbeatAt: new Date(Date.now() - 2 * 60_000).toISOString() };
+  let canReachOut = false;
+  let proactiveCalls = 0;
+  const repository = {
+    getL2: () => [],
+    getMeta: () => ({ ...meta }),
+    setMeta: async (patch: Partial<typeof meta> & { lastProactiveAt?: string }) => Object.assign(meta, patch),
+    getRecentHeartbeats: () => [],
+    recordHeartbeat: async () => undefined,
+  } as unknown as MemoryRepository;
+  const service = new HeartbeatService(
+    basicMemory(),
+    repository,
+    {
+      createHeartbeatThought: async (input: HeartbeatThoughtInput) => {
+        canReachOut = input.canReachOut;
+        return {
+          selfReflection: "我可以轻轻靠近",
+          userUnderstanding: "仍在初识",
+          relationshipFocus: "给对方拒绝空间",
+          shouldReachOut: input.canReachOut,
+          proactiveTopic: input.canReachOut ? "问问是否需要一个小帮助" : undefined,
+          reason: input.canReachOut ? "空闲阈值已满足" : input.proactivePolicyReason ?? "不打扰",
+        };
+      },
+      createHeartbeatProactiveMessage: async () => {
+        proactiveCalls += 1;
+        return { text: "需要我搭把手吗？", emotion: "curious", source: "local", memoryRefs: [] };
+      },
+    } as unknown as AgentService,
+    { get: () => structuredClone(settings) } as unknown as SettingsStore,
+    basicPersonality(),
+    basicRelationship(),
+    basicAwareness(),
+  );
+  await service.run("scheduled");
+  assert.equal(canReachOut, true);
+  assert.equal(proactiveCalls, 1);
+});
+
+test("定时心跳运行中触发手动心跳会在当前轮结束后补跑", async () => {
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  settings.heartbeat.proactiveEnabled = false;
+  let releaseFirst!: () => void;
+  let enteredFirst!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const entered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+  const reasons: HeartbeatEvent["reason"][] = [];
+  const meta: { firstHeartbeatAt?: string } = { firstHeartbeatAt: new Date().toISOString() };
+  let thoughtCalls = 0;
+  const service = new HeartbeatService(
+    basicMemory(),
+    {
+      getL2: () => [],
+      getMeta: () => ({ ...meta }),
+      setMeta: async (patch: Partial<typeof meta>) => Object.assign(meta, patch),
+      getRecentHeartbeats: () => [],
+      recordHeartbeat: async () => undefined,
+    } as unknown as MemoryRepository,
+    {
+      createHeartbeatThought: async (input: HeartbeatThoughtInput) => {
+        thoughtCalls += 1;
+        if (thoughtCalls === 1) {
+          enteredFirst();
+          await gate;
+        }
+        return {
+          selfReflection: "完成一轮思考",
+          userUnderstanding: "继续了解",
+          relationshipFocus: "保持连续",
+          shouldReachOut: false,
+          reason: input.proactivePolicyReason ?? "安静",
+        };
+      },
+    } as unknown as AgentService,
+    { get: () => structuredClone(settings) } as unknown as SettingsStore,
+    basicPersonality(),
+    basicRelationship(),
+    {
+      ...basicAwareness(),
+      observe: async (reason: HeartbeatEvent["reason"]) => {
+        reasons.push(reason);
+        return emptyAwarenessSnapshot();
+      },
+    } as unknown as DesktopAwarenessService,
+  );
+  const scheduled = service.run("scheduled");
+  await entered;
+  const manual = service.run("manual", true);
+  releaseFirst();
+  await scheduled;
+  const manualResult = await manual;
+  assert.deepEqual(reasons, ["scheduled", "manual"]);
+  assert.equal(thoughtCalls, 2);
+  assert.equal(manualResult.event.reason, "manual");
+});
+
+function emptyAwarenessSnapshot(): DesktopAwarenessSnapshot {
+  return {
+    capturedAt: new Date().toISOString(),
+    screenCaptureAttempted: false,
+    screenSharedWithProvider: false,
+    screenStatus: "disabled",
+    processScanCompleted: false,
+    processStatus: "disabled",
+    applications: [],
+  };
+}
+
+function basicAwareness(): DesktopAwarenessService {
+  return {
+    observe: async () => emptyAwarenessSnapshot(),
+    promptText: () => "none",
+    auditSummary: () => ({
+      screenSharedWithProvider: false,
+      processScanCompleted: false,
+      visibleApplicationCount: 0,
+      newApplicationCount: 0,
+      activityLabels: [],
+      screenStatus: "disabled",
+      processStatus: "disabled",
+    }),
+  } as unknown as DesktopAwarenessService;
+}
+
+function basicMemory(): MemoryEngine {
+  return {
+    flushL1: async () => 0,
+    reviewSummary: () => "暂无新记忆",
+    snapshot: () => ({ l1: [], l2: [], l3: [], recentHeartbeats: [] }),
+  } as unknown as MemoryEngine;
+}
+
+function basicPersonality(): PersonalityEngine {
+  return {
+    reviewMemories: async () => 0,
+    getProfile: () => emptyPersonalityProfile(),
+  } as unknown as PersonalityEngine;
+}
+
+function basicRelationship(): RelationshipEngine {
+  return {
+    reviewMemories: async () => 0,
+    getProfile: () => emptyRelationshipProfile(),
+    recordProactiveTopic: async () => undefined,
+  } as unknown as RelationshipEngine;
+}
 
 function memoryRecord(): MemoryRecord {
   const now = new Date().toISOString();

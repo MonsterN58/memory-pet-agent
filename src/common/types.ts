@@ -86,6 +86,15 @@ export type DesktopActivityKind =
   | "media"
   | "gaming";
 export type ProactiveTopicFeedback = "pending" | "welcomed" | "neutral" | "dismissed";
+export type AwarenessChannelStatus =
+  | "disabled"
+  | "not-requested"
+  | "startup-skipped"
+  | "not-configured"
+  | "not-supported"
+  | "completed"
+  | "completed-empty"
+  | "failed";
 
 export interface PersonalityTraitState {
   dimension: PersonalityDimension;
@@ -246,11 +255,14 @@ export interface HeartbeatThought {
 }
 
 export interface HeartbeatAwarenessSummary {
+  /** 兼容既有持久化字段；现在表示图片已发送到独立识图端点。 */
   screenSharedWithProvider: boolean;
   processScanCompleted: boolean;
   visibleApplicationCount: number;
   newApplicationCount: number;
   activityLabels: string[];
+  screenStatus?: AwarenessChannelStatus;
+  processStatus?: AwarenessChannelStatus;
 }
 
 export interface MemorySnapshot {
@@ -274,6 +286,11 @@ export interface AgentSettings {
     model: string;
     temperature: number;
   };
+  vision: {
+    enabled: boolean;
+    baseUrl: string;
+    model: string;
+  };
   heartbeat: {
     enabled: boolean;
     intervalMinutes: number;
@@ -290,6 +307,7 @@ export interface AgentSettings {
   awareness: {
     screenCaptureEnabled: boolean;
     processDetectionEnabled: boolean;
+    processPollMinutes: number;
   };
   voice: {
     inputEnabled: boolean;
@@ -318,6 +336,7 @@ export interface AgentSettings {
 export interface PublicSettingsState {
   settings: AgentSettings;
   hasApiKey: boolean;
+  hasVisionApiKey: boolean;
   hasTtsApiKey: boolean;
   dataDirectory: string;
 }
@@ -325,6 +344,8 @@ export interface PublicSettingsState {
 export interface SettingsUpdate extends Partial<AgentSettings> {
   apiKey?: string;
   clearApiKey?: boolean;
+  visionApiKey?: string;
+  clearVisionApiKey?: boolean;
   ttsApiKey?: string;
   clearTtsApiKey?: boolean;
 }

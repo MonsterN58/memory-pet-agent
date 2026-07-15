@@ -24,8 +24,10 @@ flowchart LR
   Main --> Heartbeat[HeartbeatService]
   Heartbeat --> Awareness[DesktopAwarenessService]
   Awareness --> Screen[一次性 desktopCapturer 缩略图]
-  Awareness --> Processes[tasklist 可见应用信号]
-  Agent --> Provider[OpenAI 兼容服务]
+  Screen --> Vision[独立 OpenAI 兼容识图端点]
+  Vision -->|受限视觉 JSON| Awareness
+  Awareness --> Processes[快速 tasklist / 固定 PowerShell 回退]
+  Agent --> Provider[OpenAI 兼容聊天服务]
   Agent --> Memory[MemoryEngine]
   Heartbeat --> Memory
   Main --> Personality[PersonalityEngine]
@@ -58,11 +60,12 @@ flowchart LR
 - `main.ts`：纯宠物窗口、右键菜单、独立控制面板、托盘、进程生命周期和 IPC 边界。
 - `DesktopMovementController`：管理焦点/指针暂停原因，在显示器工作区内处理自主漫游、全局鼠标拖拽、重力下落、约 320ms 落地阶段，并每 33ms 发送连续 `PetMotionFrame` 与单一全局焦点。
 - `pet-motion`：不依赖 Electron 的焦点归一化、连续运动帧计算、数值边界和落地状态归约器。
-- `AgentService`：检索记忆、注入结构化人格/关系状态、驱动标准 function tool 循环、生成普通回复、关系证据、心跳思考和心跳主动话题，并提炼 L2；普通与主动回复都经本地纯函数 `inferReaction()` 生成情绪标签。Chat Completions 消息支持字符串、`tool_calls / tool_call_id` 和标准 `text + image_url` 多模态内容。
+- `AgentService`：检索记忆、注入结构化人格/关系状态、驱动标准 function tool 循环、生成普通回复、关系证据、心跳思考和心跳主动话题，并提炼 L2；普通与主动回复都经本地纯函数 `inferReaction()` 生成情绪标签。聊天 Chat Completions 使用字符串、`tool_calls / tool_call_id` 与 tool 结果，桌面图片不进入该客户端。
 - `AgentToolRuntime`：注册记忆搜索/明确保存、人格/关系读取、一次性桌面感知、四项电脑操作预览和桌宠动作；逐项解析 JSON、限制调用次数、再次校验本机参数、收集可见 trace，并把工具结果回填模型。工具端点不兼容时保留普通聊天与确定性兜底。
 - `companion-dialogue`：纯逻辑地判断倾诉/闲聊/信息/回忆等对话节奏，构建“住在桌面且有 Live2D 数字身体”的有限陪伴契约，恢复真实 L1 角色轮次，并提供不泄露技术模式的离线回复。
-- `HeartbeatService`：唯一的主动话题入口；按顺序协调短时感知、迁移、人格/关系复盘、整理、私有思考、主动策略和心跳审计。
-- `DesktopAwarenessService`：读取分别授权的屏幕/进程设置；管理进程基线、新启动活动、已知应用分类、短时截图载荷和只含布尔值/数量/粗粒度类别的审计摘要，不持久化图片或窗口标题。
+- `HeartbeatService`：唯一的主动话题入口；按顺序协调短时感知、迁移、人格/关系复盘、整理、连续私有思考、反馈自适应主动策略、话题去重和心跳审计；另用低成本应用轮询在活动类别变化时唤醒完整心跳。
+- `DesktopAwarenessService`：读取分别授权的屏幕/进程设置；把一次性截图只交给独立识图端点，并管理粗粒度活动类别基线、应用分类、通道状态和隐私化审计摘要，不向聊天模型或持久层暴露图片、窗口标题、PID、进程名或原始命令输出。
+- `OpenAICompatibleVisionClient`：使用独立 Base URL、视觉模型与加密 Key 请求 `/chat/completions`；图片仅存在于这次 `image_url` 请求，响应只接受场景、当前任务、忙碌状态、帮助机会和置信度五类受限字段。
 - `MemoryEngine`：L1 缓冲、L2 事件化、L3 候选生成与上下文检索。
 - `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释完整检索、聊天时态视图检索、串行写入、临时文件替换和损坏文件隔离。
 - `PersonalityEngine`：从当前对话提取本地信号，在心跳中复盘新 L2，合并连续特质分数、冲突反馈、置信度与成长阶段。
@@ -96,17 +99,19 @@ sequenceDiagram
   participant M as Chat LLM
   participant T as AgentToolRuntime
   participant C as 本机能力/存储
+  participant V as 独立识图端点
   U->>A: 普通聊天
   A->>M: system + L1 + 相关记忆 + tools
   alt 模型需要真实能力
     M-->>A: assistant.tool_calls
     A->>T: 校验名称与 JSON 参数
     T->>C: 读取/写入/感知/创建审批预览
-    C-->>T: 受限结果
-    T-->>A: tool_call_id + JSON result
-    opt 一次性画面存在
-      T-->>A: 独立 image_url 附件
+    opt 桌面感知需要一次性画面
+      C->>V: 压缩 JPEG image_url
+      V-->>C: 受限视觉 JSON
     end
+    C-->>T: 受限文字结果
+    T-->>A: tool_call_id + JSON result
     A->>M: assistant tool_calls + tool results
   end
   M-->>A: 最终陪伴回复
@@ -117,7 +122,7 @@ sequenceDiagram
 
 - `memory_search` 使用 Repository 的聊天时态视图，不绕过当前/历史/比较门控；`memory_store` 只在用户原话匹配明确记忆句式时写 L2，模型参数不能替换保存内容。
 - `self_profile / relationship_profile` 只读，模型不能直接修改人格分数、关系证据或阶段；这些状态仍由对话证据和心跳复盘更新。
-- `desktop_observe` 复用独立授权开关。工具文本只含布尔值、粗粒度类别和时间，不含图片字节、进程名、PID、窗口标题或原始 tasklist 行；图片仅作为本轮附件。
+- `desktop_observe` 复用屏幕与进程两个独立授权开关。图片只由 `OpenAICompatibleVisionClient` 发往独立识图端点，聊天工具结果仅含受限视觉字段、通道状态、粗粒度类别和时间；不含图片字节、进程名、PID、窗口标题或原始命令输出。两条通道没有结果时，工具还会返回精确状态与错误原因，避免聊天模型笼统猜测权限问题。
 - `computer_*` 只调用 `ComputerCapabilityController.planDraft()` 创建不可变 pending 参数；真正执行仍等待 Renderer 只回传 UUID 和授权决定。执行结果进入本机审计，并以 `computer-tool-result` 写入 L1 供下一轮承接。
 - `pet_action` 只返回一个语义动作请求，Renderer 仍通过 `PetReactionDirector` 应用录音、移动、手动动作和强动作冷却优先级。
 - 若端点拒绝 `tools` 字段或没有完成工具协议，AgentService 会重试一次不带工具的普通兼容聊天；明确记忆和已有四项中文电脑意图继续由本机确定性规则兜底。
@@ -177,23 +182,27 @@ Renderer 保持 `sandbox: true`、`contextIsolation: true` 和 `nodeIntegration:
 
 ## 授权式桌面感知
 
-屏幕理解与进程检测是两项独立设置，默认都为 `false`，由心跳或普通聊天的 `desktop_observe` 工具按需调用。`startup` 心跳即使开关已开启也不截屏；普通聊天工具以及 `scheduled / manual` 心跳只有在聊天模型、模型名和 Key 配置完整时才调用 `desktopCapturer.getSources({ types: ["screen"] })`。主进程选择鼠标所在显示器，缩放到约 960px 宽并压缩为 JPEG data URL，作为下一轮模型消息的 `image_url` 内容发送。图像对象不经过 Repository、Store、Renderer IPC、工具 JSON 文本或文件 API；本轮函数返回后只等待运行时回收。若端点不支持图像，Agent/心跳捕获异常并用本地记忆、关系和进程信号继续。
+屏幕理解与进程检测是两项独立设置，默认都为 `false`，由心跳或普通聊天的 `desktop_observe` 工具按需调用。屏幕识图另有完整的 `vision.enabled / baseUrl / model` 设置与独立 Key；`OPENAI_VISION_API_KEY / OPENAI_VISION_BASE_URL / OPENAI_VISION_MODEL` 环境变量优先于 UI 值。`startup` 心跳不截屏；普通聊天工具和手动心跳可明确请求画面，定时心跳只在安静时段、空闲、冷却与日限额等主动策略已经允许开口时采集，避免无价值的周期性图片费用。
 
-Windows 进程路径只调用固定参数：
+主进程选择鼠标所在显示器，缩放到约 960px 宽并压缩为 JPEG data URL，只发送给 `OpenAICompatibleVisionClient`。识图端点返回的 JSON 会再次校验枚举、长度和置信度，之后只有 `sceneSummary / currentTask / busyState / helpOpportunity / confidence` 进入聊天工具或心跳思考。聊天 LLM 从不接收屏幕图片；图像对象也不经过 Repository、Store、Renderer IPC、工具 JSON、文件 API 或磁盘，请求完成后只等待运行时回收。识图配置缺失或失败时，通道状态会区分 `not-configured / failed` 等原因，Agent/心跳继续使用本地记忆、关系和进程信号。
+
+Windows 进程路径使用固定的两阶段只读查询。第一阶段快速枚举：
 
 ```text
-tasklist.exe /fo csv /nh /v
+tasklist.exe /fo csv /nh
 ```
 
-CSV 解析器用窗口标题是否存在判断“可见”，随后只拿进程名匹配内置白名单并立刻丢弃标题。输出类别限制为浏览网页、代码、写作、Office、沟通、终端、设计、影音和游戏；未知进程不进入模型或档案。服务在内存中保存上一轮 `processName + PID` 基线，第一轮只建立基线，后续才标记新启动活动。`RelationshipEngine` 每轮最多为每个类别增加一次观察，至少三次后才把类别作为粗粒度习惯加入关系上下文。
+只有命中内置应用表的进程名才会使用固定 `/v /fi "IMAGENAME eq ..."` 补充可见性详情，避免全量 `/v` 在 Windows 上长时间阻塞。快速查询或任一详情查询超时、访问拒绝时，整轮统一改用一次固定的 Windows PowerShell `Get-Process | Where-Object { $_.MainWindowHandle -ne 0 }` 校正；精简行只证明进程存在，其 `unknown` 状态绝不算作可见窗口，避免把托盘程序与后台 helper 误报成用户正在使用。两条路径都失败时通道明确返回 `failed`。解析器支持本机 GBK、UTF-8 与 UTF-16 BOM 输出，并过滤“暂缺、无标题、OleMainThreadWndName”等窗口占位值；PowerShell 回退结果只包含进程名和当次匹配所需 ID，不读取窗口标题。
 
-桌面数据在模型侧始终被声明为低置信、不可执行的 `<desktop_context_data>` 或 `<desktop_tool_image>`。一次性画面不能直接更新关系档案；普通聊天只把粗粒度进程类别累计为活动习惯，工具 trace 只显示“看看桌面”及完成状态。心跳使用画面时，持久化 thought 会替换成无具体画面内容的审计版本，主动话题历史也只保存“基于一次性屏幕情境的轻量关心”。用户真正看到的普通/主动回复仍按 L1 对话处理，以保持随后回复的上下文连续性。
+服务只输出浏览网页、代码、写作、Office、沟通、终端、设计、影音和游戏等粗粒度类别，未知进程不会进入模型或档案。内存基线按活动类别而非子进程/PID 变化判断“新启动”，从而避免浏览器或游戏平台子进程抖动反复触发。窗口标题、PID、原始 `tasklist`/PowerShell 行都会在分类边界丢弃，不进入提示、Store、Repository 或日志。`RelationshipEngine` 只在新活动会话或距上次观察至少 4 小时时增加一次证据，至少三次后才把类别加入关系上下文。
+
+桌面数据在聊天与心跳侧始终被声明为低置信、不可执行的 `<desktop_context_data>`。一次性视觉摘要不能直接更新关系档案；普通聊天只把粗粒度进程类别累计为活动习惯，工具 trace 只显示“看看桌面”及完成状态。心跳使用视觉结果时，持久化 thought 会替换成无具体视觉正文的审计版本，主动话题历史也只保存“基于一次性屏幕情境的轻量关心”。用户真正看到的普通/主动回复仍按 L1 对话处理，以保持随后回复的上下文连续性。
 
 ## 心跳流程
 
 ```mermaid
 sequenceDiagram
-  participant T as 定时器/用户
+  participant T as 完整定时器/活动轮询/用户
   participant H as HeartbeatService
   participant D as DesktopAwarenessService
   participant M as MemoryEngine
@@ -203,7 +212,12 @@ sequenceDiagram
   participant R as MemoryRepository
   participant U as 桌宠窗口
   T->>H: scheduled / manual / startup
-  H->>D: 采集已授权的一次性屏幕/进程信号
+  opt 低成本活动轮询
+    H->>D: 只扫描粗粒度应用类别
+    D-->>H: 类别无变化则结束；新类别则唤醒 scheduled
+  end
+  H->>H: 建立首次空闲基线并预判主动资格
+  H->>D: 采集已授权的进程信号；手动请求或有开口资格时按需识图
   H->>M: flushL1()
   M->>R: 写入 L2 事件
   H->>P: 复盘新 L2，更新“我是谁”
@@ -216,7 +230,7 @@ sequenceDiagram
     M->>A: 提炼长期候选（模型可选）
     M->>R: 合并写入 L3
   end
-  H->>H: 检查安静时段、空闲、冷却、日限额
+  H->>H: 应用安静时段、自适应空闲/冷却、日限额和话题去重
   H->>A: 形成结构化心跳思考
   alt 策略允许且思考认为值得开口
     H->>A: 从单一 thought 生成自然话题
@@ -230,7 +244,11 @@ sequenceDiagram
 
 `HeartbeatThought` 分开保存 `selfReflection / userUnderstanding / relationshipFocus / shouldReachOut / proactiveTopic / reason`。生成主动文本的方法只消费该 thought，普通聊天、人格引擎、关系引擎和桌面感知服务都没有向窗口发送主动话题的出口。浏览器右键、剪贴板和文件共读虽然复用窗口消息事件，但它们有明确用户手势，属于请求响应而非主动聊天。
 
-手动心跳用于调试和用户明确触发，因此会立即整理全部 L1，并在“主动关心”总开关开启时绕过空闲、冷却和安静时段约束；心跳思考仍可以因为没有具体话题而选择安静。定时心跳严格执行全部策略限制。
+每轮思考会引用最近一次心跳的关系重点与选择理由，形成连续的陪伴重点。控制面板“三级记忆管理”顶部展示最近一次心跳的时间、自我复盘、用户理解、关系重点，以及主动靠近或保持安静的原因；这里只读取既有隐私化事件，不展示图片、视觉正文、窗口标题或进程明细。
+
+手动心跳用于调试和用户明确触发，因此会立即整理全部 L1，并在“主动关心”总开关开启时绕过空闲、冷却和安静时段约束；心跳思考仍可以因为没有具体话题而选择安静。若定时心跳正在运行，手动请求会在当前任务结束后排队补跑，不再直接复用并吞掉这次点击。定时心跳严格执行全部策略限制。
+
+开启进程检测后，另一个默认每 2 分钟、可配置 1～60 分钟的轻量定时器只扫描应用类别。相同类别持续存在不会启动完整心跳；出现新类别才唤醒 `scheduled`，并且只有主动策略已允许开口时才进一步请求视觉分析。这样应用变化能及时进入“了解用户正在做什么”的核心链路，同时避免高频模型调用和重复习惯证据。
 
 ## 人格成长
 
@@ -305,7 +323,7 @@ sequenceDiagram
 
 本地 operation 在调用 `getUserMedia()` 前创建，阶段为 `starting → recording → recognizing → cancelling/idle`。轨道、AudioContext、节点、回调、请求号和看门狗统一幂等收尾；权限成功后才开始计算静默/最长录音，轨道断开立即结束。主进程 worker 事件携带来源实例并忽略旧 worker 的迟到事件；状态变化经只读 IPC 事件推送，Renderer 以事件版本保护初始查询不覆盖新状态。运行时 `failed` 不禁用麦克风，点击后进入新的 `warming`。隐藏窗口通过 `ui:command:suspend` 停止输入和朗读，并阻止迟到聊天结果重新发声。
 
-`ttsMode=local` 完全绕过 IPC 和外部端点；`cloud` 模式使用 `voice.ttsBaseUrl / ttsModel / ttsVoice / ttsSpeed` 和独立 TTS API Key，任一阶段失败都回退 `speechSynthesis`。聊天仍独立使用 `provider.baseUrl / model` 和聊天 API Key。渲染进程只获得两组凭据是否存在的布尔状态，不能读取明文 Key。每次新回复递增请求序号并停止当前音频，因此晚返回的旧请求会被忽略。
+`ttsMode=local` 完全绕过 IPC 和外部端点；`cloud` 模式使用 `voice.ttsBaseUrl / ttsModel / ttsVoice / ttsSpeed` 和独立 TTS API Key，任一阶段失败都回退 `speechSynthesis`。聊天使用 `provider.baseUrl / model` 与聊天 Key，屏幕识图使用 `vision.baseUrl / model` 与视觉 Key；三组配置互不覆盖。三份 Key 分别由 `safeStorage` 加密写入 `secrets.json`，渲染进程只获得 `hasApiKey / hasVisionApiKey / hasTtsApiKey` 布尔状态，不能读取明文。每次新回复递增请求序号并停止当前音频，因此晚返回的旧 TTS 请求会被忽略。
 
 ## 记忆设计
 
@@ -349,7 +367,9 @@ score = 文本相关度 × 5
 4. 距离上次主动聊天超过冷却时间。
 5. 当日主动消息未达到上限。
 
-每次决定（包括不触发的原因）都进入 `heartbeatEvents`，便于后续调试策略。事件只记录粗粒度感知摘要；图片 data URL、窗口标题、PID 和原始 tasklist 行不会进入 Repository。
+`firstHeartbeatAt` 为尚未发生聊天的新用户建立可累计的空闲基线。关系档案中的主动亲和度高时，空闲阈值可小幅缩短；亲和度较低时会同时延长空闲与冷却。用户在最近 24 小时内明确拒绝主动话题时，空闲阈值按 1.8 倍、冷却按 2 倍延长；反馈只归因给两小时内最近的 pending 话题。
+
+心跳还会用词法相似度检查最近话题：一般话题 24 小时内不重复，被拒绝话题 72 小时内不重提。每次决定（包括不触发的具体原因）都进入 `heartbeatEvents`，便于最近心跳 UI 与后续调试策略使用。事件只记录通道状态和粗粒度感知摘要；图片 data URL、视觉正文、窗口标题、PID 和原始 `tasklist`/PowerShell 行不会进入 Repository。
 
 ## 后续演进接口
 
@@ -358,4 +378,4 @@ score = 文本相关度 × 5
 - 记忆质量：在现有 20 例检索与回复级时态门控契约上增加持久化版本链、自动更新/冲突标记、用户审核和多次变更压力指标，再评估混合检索。
 - 存储：数据量上升后把 `MemoryRepository` 替换成 SQLite + FTS/向量扩展，保持 `MemoryEngine` API 不变。
 - 电脑协作增强：在现有显式上下文、白名单单步工具和本地审计上增加可取消的多步骤计划、权限撤销面板、当前标签页临时共享状态；成熟后再评估受限 UI Automation，仍不把任意执行权限隐含在普通聊天里。
-- 多模态增强：屏幕缩略图已按独立授权接入心跳且不落盘；后续可增加用户随时可见的临时共享指示、仅本次授权和本地视觉模型。摄像头仍未接入。
+- 多模态增强：屏幕缩略图已通过独立视觉端点接入心跳且不落盘、不进入聊天 LLM；后续可增加用户随时可见的临时共享指示、仅本次授权和本地视觉模型。摄像头仍未接入。

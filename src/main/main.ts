@@ -52,6 +52,7 @@ import { MemoryRepository } from "./memory/memory-repository";
 import { ModelStore } from "./model-store";
 import { hidePetWindow, sendToLiveWindow } from "./pet-window-lifecycle";
 import { OpenAICompatibleTtsClient } from "./provider/openai-compatible-tts";
+import { OpenAICompatibleVisionClient } from "./provider/openai-compatible-vision";
 import { PersonalityEngine } from "./personality/personality-engine";
 import { PersonalityStore } from "./personality/personality-store";
 import { RelationshipEngine } from "./relationship/relationship-engine";
@@ -375,7 +376,7 @@ function desktopAwarenessMenu(): MenuItemConstructorOptions {
     label: "桌面感知",
     submenu: [
       {
-        label: "允许 Agent / 心跳按需理解屏幕（发送给聊天模型）",
+        label: "允许 Agent / 心跳按需理解屏幕（使用独立识图 API）",
         type: "checkbox",
         checked: settings.awareness.screenCaptureEnabled,
         click: (item) => void updateSettings({
@@ -951,9 +952,14 @@ async function initialize(): Promise<void> {
   if (modelSwitchSmoke) await modelStore.selectBundled("hiyori");
   smokeLog("MODEL_STORE_READY");
   memoryEngine = new MemoryEngine(memoryRepository, () => settingsStore.get());
+  const visionClient = new OpenAICompatibleVisionClient(
+    () => settingsStore.get(),
+    () => settingsStore.getVisionApiKey(),
+  );
   desktopAwarenessService = new DesktopAwarenessService(() => settingsStore.get(), {
     captureScreen: captureCurrentDesktopScreen,
-    providerConfigured: () => settingsStore.providerConfigured(),
+    visionConfigured: () => settingsStore.visionProviderConfigured(),
+    analyzeScreen: (frame, purpose) => visionClient.analyzeDesktop(frame.dataUrl, purpose),
   });
   movementController = new DesktopMovementController(
     () => petWindow,

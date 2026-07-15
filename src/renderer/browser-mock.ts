@@ -44,6 +44,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   let settingsState: PublicSettingsState = {
     settings: structuredClone(DEFAULT_SETTINGS),
     hasApiKey: false,
+    hasVisionApiKey: false,
     hasTtsApiKey: false,
     dataDirectory: "本地 UI 预览模式",
   };
@@ -212,6 +213,8 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
         id: crypto.randomUUID(), reason: "manual" as const, createdAt: new Date().toISOString(),
         movedToL2: 0, consolidatedToL3: consolidated.length, reflection: "预览模式心跳已完成。",
       };
+      memory.recentHeartbeats.unshift(event);
+      memory.recentHeartbeats = memory.recentHeartbeats.slice(0, 20);
       return {
         event,
         snapshot: structuredClone(memory),
@@ -226,6 +229,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
           ...settingsState.settings,
           ...update,
           provider: update.provider ?? settingsState.settings.provider,
+          vision: update.vision ?? settingsState.settings.vision,
           personality: update.personality ?? settingsState.settings.personality,
           heartbeat: update.heartbeat ?? settingsState.settings.heartbeat,
           awareness: update.awareness ?? settingsState.settings.awareness,
@@ -234,6 +238,8 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
           window: update.window ?? settingsState.settings.window,
         },
         hasApiKey: Boolean(update.apiKey) || (settingsState.hasApiKey && !update.clearApiKey),
+        hasVisionApiKey: Boolean(update.visionApiKey)
+          || (settingsState.hasVisionApiKey && !update.clearVisionApiKey),
         hasTtsApiKey: Boolean(update.ttsApiKey)
           || (settingsState.hasTtsApiKey && !update.clearTtsApiKey),
       };

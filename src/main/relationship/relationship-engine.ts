@@ -20,6 +20,7 @@ export interface RelationshipSignal {
 export interface ObservedDesktopActivity {
   kind: DesktopActivityKind;
   label: string;
+  newlyStarted?: boolean;
 }
 
 export type RelationshipAnalyzer = (
@@ -95,11 +96,17 @@ export class RelationshipEngine {
       if (!unique.size) return 0;
       const profile = this.store.getProfile();
       const now = new Date().toISOString();
+      let meaningfulUpdates = 0;
       for (const activity of unique.values()) {
         const current = profile.activityPatterns.find((item) => item.activity === activity.kind);
         if (current) {
-          current.observations += 1;
-          current.confidence = clamp(0.25 + current.observations * 0.13, 0, 0.94);
+          const elapsed = Date.now() - Date.parse(current.lastSeenAt);
+          const newSession = activity.newlyStarted === true || elapsed >= 4 * 60 * 60_000;
+          if (newSession) {
+            current.observations += 1;
+            current.confidence = clamp(0.25 + current.observations * 0.13, 0, 0.94);
+            meaningfulUpdates += 1;
+          }
           current.label = activity.label.slice(0, 40);
           current.lastSeenAt = now;
         } else {
@@ -111,6 +118,7 @@ export class RelationshipEngine {
             firstSeenAt: now,
             lastSeenAt: now,
           });
+          meaningfulUpdates += 1;
         }
       }
       profile.activityPatterns = profile.activityPatterns
@@ -118,7 +126,7 @@ export class RelationshipEngine {
         .slice(0, 12);
       this.refreshProfile(profile);
       await this.store.save(profile, this.reviewedMemoryIds);
-      return unique.size;
+      return meaningfulUpdates;
     });
   }
 
@@ -163,6 +171,7 @@ export class RelationshipEngine {
       .filter((item) => item.observations >= 3 && item.confidence >= 0.55)
       .slice(0, 4);
     const moments = profile.sharedMoments.slice(-3);
+    const recentProactive = profile.recentProactiveTopics.slice(-4);
     return [
       `关系阶段：${profile.stage}；累计互动：${profile.interactionCount}。`,
       `关系摘要：${profile.summary}`,
@@ -175,6 +184,12 @@ export class RelationshipEngine {
         : []),
       ...(moments.length
         ? ["共同经历的片段：", ...moments.map((item) => `- ${item.summary}`)]
+        : []),
+      ...(recentProactive.length
+        ? [
+          "近期主动靠近过的话题与用户反馈；不要短时间重复相同话题：",
+          ...recentProactive.map((item) => `- ${item.topic}（${item.feedback}）`),
+        ]
         : []),
       `关心方式：主动接近 ${profile.careStyle.initiativeAffinity.toFixed(2)}；实际帮忙 ${profile.careStyle.practicalHelpAffinity.toFixed(2)}；安静陪伴 ${profile.careStyle.quietCompanionshipAffinity.toFixed(2)}。`,
     ].join("\n");
@@ -298,7 +313,7 @@ export class RelationshipEngine {
     const latest = [...profile.recentProactiveTopics].reverse().find((item) => item.feedback === "pending");
     if (!latest) return 0;
     const age = Date.now() - Date.parse(latest.offeredAt);
-    const feedback: ProactiveTopicFeedback = age > 12 * 60 * 60_000
+    const feedback: ProactiveTopicFeedback = age > 2 * 60 * 60_000
       ? "neutral"
       : /别问|别管|不用|不要打扰|烦|先不聊|闭嘴/.test(text)
         ? "dismissed"

@@ -10,8 +10,9 @@ test("设置清洗会限制危险或越界输入", () => {
     persona: "旧版固定人格提示词",
     personality: { learningEnabled: true, adaptationRate: 99, minimumEvidence: 0 },
     provider: { ...DEFAULT_SETTINGS.provider, baseUrl: "file:///tmp/secrets", temperature: 99 },
+    vision: { enabled: "yes" as never, baseUrl: "javascript:alert('vision')", model: "v".repeat(200) },
     heartbeat: { ...DEFAULT_SETTINGS.heartbeat, intervalMinutes: 0, proactiveDailyLimit: 999 },
-    awareness: { screenCaptureEnabled: "yes" as never, processDetectionEnabled: true },
+    awareness: { screenCaptureEnabled: "yes" as never, processDetectionEnabled: true, processPollMinutes: 0 },
     voice: {
       ...DEFAULT_SETTINGS.voice,
       recognitionMode: "remote" as never,
@@ -40,10 +41,14 @@ test("设置清洗会限制危险或越界输入", () => {
   assert.equal("persona" in settings, false);
   assert.equal(settings.provider.baseUrl, DEFAULT_SETTINGS.provider.baseUrl);
   assert.equal(settings.provider.temperature, 2);
+  assert.equal(settings.vision.enabled, false);
+  assert.equal(settings.vision.baseUrl, DEFAULT_SETTINGS.vision.baseUrl);
+  assert.equal(settings.vision.model.length, 120);
   assert.equal(settings.heartbeat.intervalMinutes, 1);
   assert.equal(settings.heartbeat.proactiveDailyLimit, 48);
   assert.equal(settings.awareness.screenCaptureEnabled, false);
   assert.equal(settings.awareness.processDetectionEnabled, true);
+  assert.equal(settings.awareness.processPollMinutes, 1);
   assert.equal(settings.voice.recognitionMode, "local");
   assert.equal(settings.voice.ttsMode, "local");
   assert.equal(settings.voice.ttsBaseUrl, DEFAULT_SETTINGS.voice.ttsBaseUrl);

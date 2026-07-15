@@ -7,13 +7,16 @@ import { clamp } from "./memory/memory-utils";
 
 interface SecretFile {
   encryptedApiKey?: string;
+  encryptedVisionApiKey?: string;
   encryptedTtsApiKey?: string;
+  visionKeyMigrated?: boolean;
   ttsKeyMigrated?: boolean;
 }
 
-type SettingsInput = Omit<Partial<AgentSettings>, "voice"> & {
+type SettingsInput = Omit<Partial<AgentSettings>, "vision" | "voice"> & {
   /** v0.1 手写性格提示，仅用于识别并丢弃旧设置。 */
   persona?: unknown;
+  vision?: Partial<AgentSettings["vision"]>;
   voice?: Partial<AgentSettings["voice"]> & {
     /** v0.1 系统 speechSynthesis 设置，仅用于迁移旧数据。 */
     voiceName?: unknown;
@@ -51,6 +54,7 @@ function validBaseUrl(value: unknown, fallback: string): string {
 
 export function sanitizeSettings(input: SettingsInput): AgentSettings {
   const provider = input.provider ?? DEFAULT_SETTINGS.provider;
+  const vision = input.vision ?? DEFAULT_SETTINGS.vision;
   const personality = input.personality ?? DEFAULT_SETTINGS.personality;
   const heartbeat = input.heartbeat ?? DEFAULT_SETTINGS.heartbeat;
   const awareness = input.awareness ?? DEFAULT_SETTINGS.awareness;
@@ -81,6 +85,11 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
       baseUrl: validBaseUrl(provider.baseUrl, DEFAULT_SETTINGS.provider.baseUrl),
       model: stringValue(provider.model, DEFAULT_SETTINGS.provider.model, 120),
       temperature: clamp(numberValue(provider.temperature, DEFAULT_SETTINGS.provider.temperature, 0, 2), 0, 2),
+    },
+    vision: {
+      enabled: booleanValue(vision.enabled, DEFAULT_SETTINGS.vision.enabled),
+      baseUrl: validBaseUrl(vision.baseUrl, DEFAULT_SETTINGS.vision.baseUrl),
+      model: stringValue(vision.model, DEFAULT_SETTINGS.vision.model, 120),
     },
     heartbeat: {
       enabled: booleanValue(heartbeat.enabled, DEFAULT_SETTINGS.heartbeat.enabled),
@@ -119,6 +128,12 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
       processDetectionEnabled: booleanValue(
         awareness.processDetectionEnabled,
         DEFAULT_SETTINGS.awareness.processDetectionEnabled,
+      ),
+      processPollMinutes: numberValue(
+        awareness.processPollMinutes,
+        DEFAULT_SETTINGS.awareness.processPollMinutes,
+        1,
+        60,
       ),
     },
     voice: {
@@ -190,11 +205,17 @@ export class SettingsStore {
     await mkdir(this.dataDirectory, { recursive: true });
     try {
       const loaded = JSON.parse(await readFile(this.settingsPath, "utf8")) as SettingsInput;
+      const migratedVision = loaded.vision ?? {
+        enabled: Boolean(loaded.awareness?.screenCaptureEnabled && loaded.provider?.enabled),
+        baseUrl: loaded.provider?.baseUrl ?? DEFAULT_SETTINGS.vision.baseUrl,
+        model: loaded.provider?.model ?? DEFAULT_SETTINGS.vision.model,
+      };
       this.settings = sanitizeSettings({
         ...DEFAULT_SETTINGS,
         ...loaded,
         personality: { ...DEFAULT_SETTINGS.personality, ...loaded.personality },
         provider: { ...DEFAULT_SETTINGS.provider, ...loaded.provider },
+        vision: { ...DEFAULT_SETTINGS.vision, ...migratedVision },
         heartbeat: { ...DEFAULT_SETTINGS.heartbeat, ...loaded.heartbeat },
         awareness: { ...DEFAULT_SETTINGS.awareness, ...loaded.awareness },
         // 不预先注入新版 voice 默认值，确保 voiceName/rate 旧字段能被迁移。
@@ -225,6 +246,7 @@ export class SettingsStore {
     return {
       settings: this.get(),
       hasApiKey: Boolean(await this.getApiKey()),
+      hasVisionApiKey: Boolean(await this.getVisionApiKey()),
       hasTtsApiKey: Boolean(await this.getTtsApiKey()),
       dataDirectory: this.dataDirectory,
     };
@@ -236,6 +258,7 @@ export class SettingsStore {
       ...update,
       personality: { ...this.settings.personality, ...(update.personality ?? {}) },
       provider: { ...this.settings.provider, ...(update.provider ?? {}) },
+      vision: { ...this.settings.vision, ...(update.vision ?? {}) },
       heartbeat: { ...this.settings.heartbeat, ...(update.heartbeat ?? {}) },
       awareness: { ...this.settings.awareness, ...(update.awareness ?? {}) },
       voice: { ...this.settings.voice, ...(update.voice ?? {}) },
@@ -256,12 +279,20 @@ export class SettingsStore {
       delete secrets.encryptedApiKey;
       secretsChanged = true;
     }
+    if (update.clearVisionApiKey) {
+      delete secrets.encryptedVisionApiKey;
+      secretsChanged = true;
+    }
     if (update.clearTtsApiKey) {
       delete secrets.encryptedTtsApiKey;
       secretsChanged = true;
     }
     if (typeof update.apiKey === "string" && update.apiKey.trim()) {
       secrets.encryptedApiKey = this.encryptApiKey(update.apiKey.trim(), "OPENAI_API_KEY");
+      secretsChanged = true;
+    }
+    if (typeof update.visionApiKey === "string" && update.visionApiKey.trim()) {
+      secrets.encryptedVisionApiKey = this.encryptApiKey(update.visionApiKey.trim(), "OPENAI_VISION_API_KEY");
       secretsChanged = true;
     }
     if (typeof update.ttsApiKey === "string" && update.ttsApiKey.trim()) {
@@ -294,8 +325,24 @@ export class SettingsStore {
     }
   }
 
+  async getVisionApiKey(): Promise<string> {
+    if (process.env.OPENAI_VISION_API_KEY?.trim()) return process.env.OPENAI_VISION_API_KEY.trim();
+    try {
+      const secrets = await this.readSecrets();
+      if (!secrets.encryptedVisionApiKey || !safeStorage.isEncryptionAvailable()) return "";
+      return safeStorage.decryptString(Buffer.from(secrets.encryptedVisionApiKey, "base64"));
+    } catch {
+      return "";
+    }
+  }
+
   async providerConfigured(): Promise<boolean> {
     return this.settings.provider.enabled && Boolean(this.settings.provider.model && (await this.getApiKey()));
+  }
+
+  async visionProviderConfigured(): Promise<boolean> {
+    const model = process.env.OPENAI_VISION_MODEL?.trim() || this.settings.vision.model;
+    return this.settings.vision.enabled && Boolean(model && (await this.getVisionApiKey()));
   }
 
   private encryptApiKey(apiKey: string, environmentName: string): string {
@@ -307,12 +354,22 @@ export class SettingsStore {
 
   private async migrateSharedSecret(): Promise<void> {
     const secrets = await this.readSecrets();
-    if (secrets.ttsKeyMigrated) return;
-    if (secrets.encryptedApiKey && !secrets.encryptedTtsApiKey) {
-      secrets.encryptedTtsApiKey = secrets.encryptedApiKey;
+    let changed = false;
+    if (!secrets.ttsKeyMigrated) {
+      if (secrets.encryptedApiKey && !secrets.encryptedTtsApiKey) {
+        secrets.encryptedTtsApiKey = secrets.encryptedApiKey;
+      }
+      secrets.ttsKeyMigrated = true;
+      changed = true;
     }
-    secrets.ttsKeyMigrated = true;
-    await this.writeSecrets(secrets);
+    if (!secrets.visionKeyMigrated) {
+      if (this.settings.vision.enabled && secrets.encryptedApiKey && !secrets.encryptedVisionApiKey) {
+        secrets.encryptedVisionApiKey = secrets.encryptedApiKey;
+      }
+      secrets.visionKeyMigrated = true;
+      changed = true;
+    }
+    if (changed) await this.writeSecrets(secrets);
   }
 
   private async readSecrets(): Promise<SecretFile> {

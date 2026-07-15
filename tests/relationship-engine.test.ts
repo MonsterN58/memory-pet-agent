@@ -57,8 +57,10 @@ test("粗粒度桌面活动重复出现后才进入关系上下文", async (cont
   const engine = await createEngine(context);
   await engine.observeDesktopActivities([{ kind: "coding", label: "编写或阅读代码" }]);
   assert.doesNotMatch(engine.contextForPrompt(), /粗粒度活动习惯/);
-  await engine.observeDesktopActivities([{ kind: "coding", label: "编写或阅读代码" }]);
-  await engine.observeDesktopActivities([{ kind: "coding", label: "编写或阅读代码" }]);
+  await engine.observeDesktopActivities([{ kind: "coding", label: "编写或阅读代码", newlyStarted: false }]);
+  assert.equal(engine.getProfile().activityPatterns[0]?.observations, 1);
+  await engine.observeDesktopActivities([{ kind: "coding", label: "编写或阅读代码", newlyStarted: true }]);
+  await engine.observeDesktopActivities([{ kind: "coding", label: "编写或阅读代码", newlyStarted: true }]);
   const profile = engine.getProfile();
   assert.equal(profile.activityPatterns[0]?.observations, 3);
   assert.match(engine.contextForPrompt(), /粗粒度活动习惯/);

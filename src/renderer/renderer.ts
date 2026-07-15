@@ -8,6 +8,7 @@ import type {
   ComputerIntegrationState,
   ControlPanelView,
   EditableMemoryKind,
+  HeartbeatEvent,
   MemoryRecord,
   MemoryScoreBreakdown,
   MemorySnapshot,
@@ -55,6 +56,7 @@ must<HTMLElement>("#panel-app").hidden = !panelMode;
 let settingsState: PublicSettingsState = {
   settings: structuredClone(DEFAULT_SETTINGS),
   hasApiKey: false,
+  hasVisionApiKey: false,
   hasTtsApiKey: false,
   dataDirectory: "",
 };
@@ -759,6 +761,33 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     must<HTMLElement>("#l1-count").textContent = String(snapshot.l1.length);
     must<HTMLElement>("#l2-count").textContent = String(snapshot.l2.length);
     must<HTMLElement>("#l3-count").textContent = String(snapshot.l3.length);
+    renderHeartbeatInsight(snapshot.recentHeartbeats[0]);
+  }
+
+  function renderHeartbeatInsight(event: HeartbeatEvent | undefined): void {
+    const time = must<HTMLTimeElement>("#heartbeat-insight-time");
+    const reflection = must<HTMLElement>("#heartbeat-insight-reflection");
+    const focus = must<HTMLElement>("#heartbeat-insight-focus");
+    if (!event) {
+      time.removeAttribute("datetime");
+      time.textContent = "尚未运行";
+      reflection.textContent = "她会在这里留下对自己、你们的关系和下一次陪伴方式的简短复盘。";
+      focus.textContent = "心跳只保存受限摘要，不保存屏幕图片、窗口标题或视觉正文。";
+      return;
+    }
+    time.dateTime = event.createdAt;
+    time.textContent = new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    }).format(new Date(event.createdAt));
+    reflection.textContent = event.thought?.selfReflection || event.reflection;
+    const decision = event.proactiveMessage
+      ? "这次选择主动靠近"
+      : `这次选择安静：${event.skippedProactiveReason ?? event.thought?.reason ?? "没有足够具体的话题"}`;
+    focus.textContent = [
+      event.thought?.relationshipFocus,
+      event.thought?.userUnderstanding ? `对你的理解：${event.thought.userUnderstanding}` : "",
+      decision,
+    ].filter(Boolean).join(" · ");
   }
 
   function renderPersonality(profile: PersonalityProfile): void {
@@ -1152,6 +1181,12 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     input("#setting-api-key").value = "";
     input("#setting-clear-key").checked = false;
     must<HTMLElement>("#key-state").textContent = state.hasApiKey ? "已安全保存" : "未设置";
+    input("#setting-vision-enabled").checked = value.vision.enabled;
+    input("#setting-vision-base-url").value = value.vision.baseUrl;
+    input("#setting-vision-model").value = value.vision.model;
+    input("#setting-vision-api-key").value = "";
+    input("#setting-clear-vision-key").checked = false;
+    must<HTMLElement>("#vision-key-state").textContent = state.hasVisionApiKey ? "已安全保存" : "未设置";
     input("#setting-computer-enabled").checked = value.computer.enabled;
     input("#setting-browser-context").checked = value.computer.browserContextEnabled;
     input("#setting-clipboard-shortcut").checked = value.computer.clipboardShortcutEnabled;
@@ -1171,6 +1206,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     input("#setting-quiet-hours").value = `${value.heartbeat.quietHoursStart}-${value.heartbeat.quietHoursEnd}`;
     input("#setting-screen-awareness").checked = value.awareness.screenCaptureEnabled;
     input("#setting-process-awareness").checked = value.awareness.processDetectionEnabled;
+    input("#setting-process-poll-minutes").value = String(value.awareness.processPollMinutes);
     input("#setting-voice-input").checked = value.voice.inputEnabled;
     input("#setting-voice-output").checked = value.voice.outputEnabled;
     input("#setting-language").value = value.voice.language;
@@ -1207,6 +1243,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     const current = settingsState.settings;
     const quietMatch = input("#setting-quiet-hours").value.match(/^\s*(\d{1,2})\s*[-~至]\s*(\d{1,2})\s*$/);
     const apiKey = input("#setting-api-key").value.trim();
+    const visionApiKey = input("#setting-vision-api-key").value.trim();
     const ttsApiKey = input("#setting-tts-api-key").value.trim();
     return {
       agentName: input("#setting-agent-name").value,
@@ -1221,6 +1258,11 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
         baseUrl: input("#setting-base-url").value,
         model: input("#setting-model").value,
         temperature: current.provider.temperature,
+      },
+      vision: {
+        enabled: input("#setting-vision-enabled").checked,
+        baseUrl: input("#setting-vision-base-url").value,
+        model: input("#setting-vision-model").value,
       },
       heartbeat: {
         enabled: input("#setting-heartbeat-enabled").checked,
@@ -1238,6 +1280,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
       awareness: {
         screenCaptureEnabled: input("#setting-screen-awareness").checked,
         processDetectionEnabled: input("#setting-process-awareness").checked,
+        processPollMinutes: numberFrom("#setting-process-poll-minutes", current.awareness.processPollMinutes),
       },
       voice: {
         inputEnabled: input("#setting-voice-input").checked,
@@ -1268,6 +1311,8 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
       },
       apiKey: apiKey || undefined,
       clearApiKey: input("#setting-clear-key").checked,
+      visionApiKey: visionApiKey || undefined,
+      clearVisionApiKey: input("#setting-clear-vision-key").checked,
       ttsApiKey: ttsApiKey || undefined,
       clearTtsApiKey: input("#setting-clear-tts-key").checked,
     };

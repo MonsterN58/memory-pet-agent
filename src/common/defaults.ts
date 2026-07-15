@@ -14,6 +14,11 @@ export const DEFAULT_SETTINGS: AgentSettings = {
     model: "",
     temperature: 0.7,
   },
+  vision: {
+    enabled: false,
+    baseUrl: "https://api.openai.com/v1",
+    model: "",
+  },
   heartbeat: {
     enabled: true,
     intervalMinutes: 10,
@@ -30,6 +35,7 @@ export const DEFAULT_SETTINGS: AgentSettings = {
   awareness: {
     screenCaptureEnabled: false,
     processDetectionEnabled: false,
+    processPollMinutes: 2,
   },
   voice: {
     inputEnabled: true,

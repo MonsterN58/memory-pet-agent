@@ -19,6 +19,7 @@ import {
 } from "./memory-utils";
 
 interface MemoryMeta {
+  firstHeartbeatAt?: string;
   lastInteractionAt?: string;
   lastProactiveAt?: string;
 }
