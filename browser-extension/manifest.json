@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "记忆桌宠 · 网页共读",
+  "version": "0.1.0",
+  "description": "把用户明确选择的网页内容交给本机记忆桌宠解释、总结、记住或继续聊天。",
+  "permissions": ["activeTab", "contextMenus", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1:32145/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "记忆桌宠网页共读",
+    "default_popup": "popup.html"
+  }
+}

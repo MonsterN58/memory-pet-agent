@@ -54,6 +54,8 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
   const personality = input.personality ?? DEFAULT_SETTINGS.personality;
   const heartbeat = input.heartbeat ?? DEFAULT_SETTINGS.heartbeat;
   const voice: NonNullable<SettingsInput["voice"]> = input.voice ?? DEFAULT_SETTINGS.voice;
+  const computer = input.computer ?? DEFAULT_SETTINGS.computer;
+  const computerPermissions = computer.permissions ?? DEFAULT_SETTINGS.computer.permissions;
   const windowSettings = input.window ?? DEFAULT_SETTINGS.window;
   return {
     agentName: stringValue(input.agentName, DEFAULT_SETTINGS.agentName, 30),
@@ -122,6 +124,39 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
         || DEFAULT_SETTINGS.voice.ttsVoice,
       ttsSpeed: numberValue(voice.ttsSpeed ?? voice.rate, DEFAULT_SETTINGS.voice.ttsSpeed, 0.25, 4),
     },
+    computer: {
+      enabled: booleanValue(computer.enabled, DEFAULT_SETTINGS.computer.enabled),
+      browserContextEnabled: booleanValue(
+        computer.browserContextEnabled,
+        DEFAULT_SETTINGS.computer.browserContextEnabled,
+      ),
+      clipboardShortcutEnabled: booleanValue(
+        computer.clipboardShortcutEnabled,
+        DEFAULT_SETTINGS.computer.clipboardShortcutEnabled,
+      ),
+      permissions: {
+        "open-url": enumValue(
+          computerPermissions["open-url"],
+          ["ask", "allow", "deny"],
+          DEFAULT_SETTINGS.computer.permissions["open-url"],
+        ),
+        "copy-text": enumValue(
+          computerPermissions["copy-text"],
+          ["ask", "allow", "deny"],
+          DEFAULT_SETTINGS.computer.permissions["copy-text"],
+        ),
+        "save-text-file": enumValue(
+          computerPermissions["save-text-file"],
+          ["ask", "deny"],
+          DEFAULT_SETTINGS.computer.permissions["save-text-file"],
+        ),
+        "launch-app": enumValue(
+          computerPermissions["launch-app"],
+          ["ask", "allow", "deny"],
+          DEFAULT_SETTINGS.computer.permissions["launch-app"],
+        ),
+      },
+    },
     window: {
       alwaysOnTop: booleanValue(windowSettings.alwaysOnTop, DEFAULT_SETTINGS.window.alwaysOnTop),
       roamingEnabled: booleanValue(windowSettings.roamingEnabled, DEFAULT_SETTINGS.window.roamingEnabled),
@@ -152,6 +187,14 @@ export class SettingsStore {
         heartbeat: { ...DEFAULT_SETTINGS.heartbeat, ...loaded.heartbeat },
         // 不预先注入新版 voice 默认值，确保 voiceName/rate 旧字段能被迁移。
         voice: loaded.voice ?? DEFAULT_SETTINGS.voice,
+        computer: {
+          ...DEFAULT_SETTINGS.computer,
+          ...loaded.computer,
+          permissions: {
+            ...DEFAULT_SETTINGS.computer.permissions,
+            ...loaded.computer?.permissions,
+          },
+        },
         window: { ...DEFAULT_SETTINGS.window, ...loaded.window },
       });
       await this.persistSettings();
@@ -183,6 +226,14 @@ export class SettingsStore {
       provider: { ...this.settings.provider, ...(update.provider ?? {}) },
       heartbeat: { ...this.settings.heartbeat, ...(update.heartbeat ?? {}) },
       voice: { ...this.settings.voice, ...(update.voice ?? {}) },
+      computer: {
+        ...this.settings.computer,
+        ...(update.computer ?? {}),
+        permissions: {
+          ...this.settings.computer.permissions,
+          ...(update.computer?.permissions ?? {}),
+        },
+      },
       window: { ...this.settings.window, ...(update.window ?? {}) },
     });
     await this.persistSettings();

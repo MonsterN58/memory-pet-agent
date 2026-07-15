@@ -38,6 +38,17 @@ export const DEFAULT_SETTINGS: AgentSettings = {
     ttsVoice: "alloy",
     ttsSpeed: 1,
   },
+  computer: {
+    enabled: false,
+    browserContextEnabled: false,
+    clipboardShortcutEnabled: true,
+    permissions: {
+      "open-url": "ask",
+      "copy-text": "ask",
+      "save-text-file": "ask",
+      "launch-app": "ask",
+    },
+  },
   window: {
     alwaysOnTop: true,
     roamingEnabled: true,

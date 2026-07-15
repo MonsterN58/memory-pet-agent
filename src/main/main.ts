@@ -1,7 +1,9 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
   type MenuItemConstructorOptions,
@@ -12,8 +14,12 @@ import {
   Tray,
 } from "electron";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
 import type {
+  ComputerActionDecision,
+  ComputerIntegrationState,
+  ComputerTool,
   ControlPanelView,
   LocalSpeechModelStatus,
   ModelImportResult,
@@ -22,9 +28,13 @@ import type {
   PetMotionFrame,
   PersonalityProfile,
   PublicModelState,
+  SharedComputerContext,
   SettingsUpdate,
 } from "../common/types";
 import { AgentService } from "./agent-service";
+import { BrowserContextServer } from "./computer/browser-context-server";
+import { ComputerCapabilityController } from "./computer/computer-capability-controller";
+import type { AllowedDesktopApp } from "./computer/computer-action-planner";
 import { DesktopMovementController } from "./desktop-movement-controller";
 import { HeartbeatService } from "./heartbeat-service";
 import {
@@ -56,6 +66,10 @@ let modelStore: ModelStore;
 let ttsClient: OpenAICompatibleTtsClient;
 let localAsrService: LocalAsrService;
 let personalityEngine: PersonalityEngine;
+let computerController: ComputerCapabilityController;
+let browserContextServer: BrowserContextServer;
+let clipboardShortcutRegistered = false;
+const CLIPBOARD_EXPLAIN_SHORTCUT = "CommandOrControl+Shift+E";
 const PET_ACTIONS: PetAction[] = [
   "wave", "nod", "shake-head", "head-tilt", "jump", "cheer", "dance",
   "sit", "stretch", "shy", "comfort", "sleep", "surprised",
@@ -251,6 +265,7 @@ function refreshTrayMenu(): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "和桌宠说话", click: focusChat },
+      computerInteractionMenu(),
       {
         label: "允许自由移动",
         type: "checkbox",
@@ -308,10 +323,48 @@ function modelAndActionsMenu(): MenuItemConstructorOptions {
   };
 }
 
+function computerInteractionMenu(): MenuItemConstructorOptions {
+  const settings = settingsStore.get();
+  const enabled = settings.computer.enabled;
+  return {
+    label: "电脑协作",
+    submenu: [
+      {
+        label: "启用电脑协作",
+        type: "checkbox",
+        checked: enabled,
+        click: (item) => void updateSettings({
+          computer: { ...settings.computer, enabled: item.checked },
+        }),
+      },
+      { type: "separator" },
+      {
+        label: `解释剪贴板文本（${CLIPBOARD_EXPLAIN_SHORTCUT.replace("CommandOrControl", "Ctrl")}）`,
+        enabled,
+        click: () => void shareClipboard("explain").catch(reportComputerInteractionError),
+      },
+      {
+        label: "总结剪贴板文本",
+        enabled,
+        click: () => void shareClipboard("summarize").catch(reportComputerInteractionError),
+      },
+      {
+        label: "和她聊聊剪贴板文本",
+        enabled,
+        click: () => void shareClipboard("chat").catch(reportComputerInteractionError),
+      },
+      { label: "让她阅读文本文件…", enabled, click: () => void shareTextFile().catch(reportComputerInteractionError) },
+      { type: "separator" },
+      { label: "权限、浏览器扩展与审计…", click: () => openControlPanel("settings") },
+    ],
+  };
+}
+
 function showPetContextMenu(): void {
   const settings = settingsStore.get();
   const template: MenuItemConstructorOptions[] = [
     { label: "和我说话", click: focusChat },
+    computerInteractionMenu(),
     { type: "separator" },
     {
       label: "允许自由移动",
@@ -359,6 +412,163 @@ function focusChat(): void {
   petWindow.webContents.send("ui:command", "focus-chat");
 }
 
+function browserExtensionDirectory(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, "browser-extension")
+    : join(app.getAppPath(), "browser-extension");
+}
+
+function computerIntegrationState(): ComputerIntegrationState {
+  const settings = settingsStore.get().computer;
+  const bridge = browserContextServer.status();
+  return {
+    enabled: settings.enabled,
+    browserContextEnabled: settings.browserContextEnabled,
+    browserBridgeRunning: bridge.running,
+    browserBridgeMessage: bridge.message,
+    endpoint: bridge.endpoint,
+    pairingToken: computerController.pairingToken(),
+    extensionDirectory: browserExtensionDirectory(),
+    clipboardShortcutEnabled: settings.clipboardShortcutEnabled,
+    clipboardShortcutRegistered,
+    clipboardShortcut: CLIPBOARD_EXPLAIN_SHORTCUT.replace("CommandOrControl", "Ctrl"),
+    sessionAllowedTools: computerController.sessionAllowedTools(),
+    recentAudit: computerController.recentAudit(),
+  };
+}
+
+async function refreshComputerIntegration(): Promise<void> {
+  if (!computerController || !browserContextServer) return;
+  const settings = settingsStore.get().computer;
+  if (settings.enabled && settings.browserContextEnabled) await browserContextServer.start();
+  else await browserContextServer.stop();
+
+  globalShortcut.unregister(CLIPBOARD_EXPLAIN_SHORTCUT);
+  clipboardShortcutRegistered = false;
+  if (settings.enabled && settings.clipboardShortcutEnabled) {
+    clipboardShortcutRegistered = globalShortcut.register(CLIPBOARD_EXPLAIN_SHORTCUT, () => {
+      void shareClipboard("explain").catch(reportComputerInteractionError);
+    });
+  }
+}
+
+async function shareClipboard(action: SharedComputerContext["action"]): Promise<void> {
+  if (!settingsStore.get().computer.enabled) {
+    sendComputerNotice("电脑协作还没有开启。到设置里确认权限后，我就能帮你读剪贴板。", "curious");
+    return;
+  }
+  const text = clipboard.readText().replace(/\u0000/g, "").trim().slice(0, 12_000);
+  if (!text) {
+    sendComputerNotice("剪贴板里暂时没有文字。先复制一段内容，再叫我看看。", "curious");
+    return;
+  }
+  await handleSharedComputerContext({
+    action,
+    source: "clipboard",
+    text,
+    title: "剪贴板文本",
+    capturedAt: new Date().toISOString(),
+  });
+}
+
+async function shareTextFile(): Promise<void> {
+  if (!settingsStore.get().computer.enabled) {
+    sendComputerNotice("先在设置里开启电脑协作，我会在你选定文件后再读取。", "curious");
+    return;
+  }
+  const options: Electron.OpenDialogOptions = {
+    title: "选择一份让桌宠阅读的文本文件",
+    buttonLabel: "交给桌宠",
+    properties: ["openFile", "dontAddToRecent"],
+    filters: [
+      { name: "文本文件", extensions: ["txt", "md", "json", "csv", "tsv", "log", "html", "xml"] },
+    ],
+  };
+  const selected = petWindow && !petWindow.isDestroyed()
+    ? await dialog.showOpenDialog(petWindow, options)
+    : await dialog.showOpenDialog(options);
+  const path = selected.filePaths[0];
+  if (selected.canceled || !path) return;
+  const allowedExtensions = new Set([".txt", ".md", ".json", ".csv", ".tsv", ".log", ".html", ".xml"]);
+  if (!allowedExtensions.has(extname(path).toLowerCase())) throw new Error("请选择设置中列出的文本文件类型");
+  const file = await stat(path);
+  if (!file.isFile() || file.size > 512 * 1024) throw new Error("文本文件需小于 512KB");
+  const raw = (await readFile(path, "utf8")).replace(/\u0000/g, "").trim();
+  if (!raw) throw new Error("所选文件没有可读文字");
+  const text = raw.length > 12_000 ? `${raw.slice(0, 11_970)}\n[内容较长，已读取前 12000 字]` : raw;
+  await handleSharedComputerContext({
+    action: "explain",
+    source: "file",
+    text,
+    title: basename(path),
+    capturedAt: new Date().toISOString(),
+  });
+}
+
+async function handleSharedComputerContext(context: SharedComputerContext): Promise<void> {
+  const settings = settingsStore.get().computer;
+  if (!settings.enabled || (context.source === "browser" && !settings.browserContextEnabled)) {
+    await computerController.recordContext(context, "denied", "对应电脑协作权限未开启");
+    return;
+  }
+  try {
+    await heartbeatService.recordInteraction();
+    const response = await agentService.respondWithComputerContext(context);
+    await computerController.recordContext(context, "completed");
+    sendComputerResponse(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "共享内容处理失败";
+    await computerController.recordContext(context, "failed", message);
+    sendComputerNotice(`刚才那段内容没有顺利读完：${message}`, "surprised");
+  }
+}
+
+function sendComputerResponse(response: Awaited<ReturnType<AgentService["respondWithComputerContext"]>>): void {
+  if (!petWindow || petWindow.isDestroyed()) return;
+  petWindow.showInactive();
+  petWindow.webContents.send("agent:proactive", response);
+}
+
+function sendComputerNotice(text: string, emotion: "curious" | "surprised"): void {
+  sendComputerResponse({ text, emotion, source: "local", memoryRefs: [] });
+}
+
+function reportComputerInteractionError(error: unknown): void {
+  sendComputerNotice(error instanceof Error ? error.message : "电脑协作入口处理失败", "surprised");
+}
+
+async function saveComputerText(suggestedName: string, text: string): Promise<{ cancelled: boolean; path?: string }> {
+  const options: Electron.SaveDialogOptions = {
+    title: "保存桌宠整理的文本",
+    defaultPath: join(app.getPath("documents"), suggestedName),
+    buttonLabel: "保存",
+    filters: [
+      { name: "文本", extensions: ["txt"] },
+      { name: "Markdown", extensions: ["md"] },
+      { name: "JSON", extensions: ["json"] },
+      { name: "CSV", extensions: ["csv"] },
+    ],
+  };
+  const selected = petWindow && !petWindow.isDestroyed()
+    ? await dialog.showSaveDialog(petWindow, options)
+    : await dialog.showSaveDialog(options);
+  if (selected.canceled || !selected.filePath) return { cancelled: true };
+  await writeFile(selected.filePath, text, "utf8");
+  return { cancelled: false, path: selected.filePath };
+}
+
+async function launchAllowedApp(application: AllowedDesktopApp): Promise<void> {
+  if (application === "file-explorer") {
+    const error = await shell.openPath(app.getPath("home"));
+    if (error) throw new Error(error);
+    return;
+  }
+  const executable = application === "notepad" ? "notepad.exe" : "calc.exe";
+  const path = join(process.env.SystemRoot || "C:\\Windows", "System32", executable);
+  const error = await shell.openPath(path);
+  if (error) throw new Error(error);
+}
+
 function quitApplication(): void {
   quitting = true;
   app.quit();
@@ -379,6 +589,7 @@ async function updateSettings(update: SettingsUpdate) {
   heartbeatService.restartTimer();
   petWindow?.setAlwaysOnTop(state.settings.window.alwaysOnTop);
   movementController.wake();
+  if (computerController && browserContextServer) await refreshComputerIntegration();
   broadcastSettings(state);
   refreshTrayMenu();
   return state;
@@ -451,7 +662,11 @@ function registerIpc(): void {
   ipcMain.handle("agent:chat", async (_event, value: unknown) => {
     const text = sanitizeText(value);
     await heartbeatService.recordInteraction();
-    const response = await agentService.respond(text);
+    const plan = await computerController.planFromChat(text);
+    const response = await agentService.respond(text, {
+      computerProposal: plan.proposal,
+      computerWarning: plan.warning,
+    });
     broadcastPersonality();
     return response;
   });
@@ -570,6 +785,56 @@ function registerIpc(): void {
     if (typeof action !== "string" || !PET_ACTIONS.includes(action as PetAction)) throw new Error("未知桌宠动作");
     triggerPetAction(action as PetAction);
   });
+  ipcMain.handle("computer:get-state", (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("电脑协作状态只在设置窗口中显示");
+    }
+    return computerIntegrationState();
+  });
+  ipcMain.handle("computer:rotate-pairing", async (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("请从设置窗口重新生成配对信息");
+    }
+    await computerController.rotatePairingToken();
+    return computerIntegrationState();
+  });
+  ipcMain.handle("computer:copy-pairing", (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("请从设置窗口复制配对信息");
+    }
+    const state = computerIntegrationState();
+    clipboard.writeText(JSON.stringify({
+      endpoint: state.endpoint,
+      pairingToken: state.pairingToken,
+      service: "memory-pet-agent",
+      version: 1,
+    }));
+  });
+  ipcMain.handle("computer:open-extension", async (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("请从设置窗口打开浏览器扩展目录");
+    }
+    const error = await shell.openPath(browserExtensionDirectory());
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle("computer:clear-audit", async (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("请从设置窗口清空电脑协作审计");
+    }
+    await computerController.clearAudit();
+    return computerIntegrationState();
+  });
+  ipcMain.handle("computer:execute", (event, id: unknown, decision: unknown) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== petWindow) {
+      throw new Error("电脑操作只接受桌宠窗口中的确认");
+    }
+    if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error("操作 ID 无效");
+    const decisions: ComputerActionDecision[] = ["allow-once", "allow-session", "allow-always", "deny"];
+    if (typeof decision !== "string" || !decisions.includes(decision as ComputerActionDecision)) {
+      throw new Error("授权决定无效");
+    }
+    return computerController.execute(id, decision as ComputerActionDecision);
+  });
 }
 
 async function initialize(): Promise<void> {
@@ -624,10 +889,33 @@ async function initialize(): Promise<void> {
     sendPetMotion,
     sendFocus,
   );
+  computerController = new ComputerCapabilityController(dataDirectory, {
+    getSettings: () => settingsStore.get(),
+    openUrl: (url) => shell.openExternal(url),
+    copyText: (text) => clipboard.writeText(text),
+    saveText: saveComputerText,
+    launchApp: launchAllowedApp,
+    persistPermission: async (tool: ComputerTool, policy) => {
+      const current = settingsStore.get().computer;
+      await updateSettings({
+        computer: {
+          ...current,
+          permissions: { ...current.permissions, [tool]: policy },
+        },
+      });
+    },
+  });
+  await computerController.initialize();
+  browserContextServer = new BrowserContextServer({
+    getPairingToken: () => computerController.pairingToken(),
+    onContext: handleSharedComputerContext,
+    onError: (error) => console.warn("Browser context bridge error", error),
+  });
   registerIpc();
   petWindow = createPetWindow();
   createTray();
   movementController.start();
+  await refreshComputerIntegration();
   smokeLog("WINDOW_AND_TRAY_CREATED");
   heartbeatService.start(sendProactive, () => broadcastPersonality());
 }
@@ -647,4 +935,6 @@ app.on("before-quit", () => {
   movementController?.stop();
   heartbeatService?.stop();
   void localAsrService?.close();
+  void browserContextServer?.stop();
+  globalShortcut.unregisterAll();
 });

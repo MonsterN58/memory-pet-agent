@@ -1,6 +1,8 @@
 import { DEFAULT_SETTINGS } from "../common/defaults";
 import type {
   ChatResponse,
+  ComputerAuditEntry,
+  ComputerIntegrationState,
   ControlPanelView,
   Live2DModelAssetPackage,
   Live2DModelInfo,
@@ -67,6 +69,25 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   let previewDragging = false;
   let resourceModelId = "hiyori";
   let modelState = createModelState(BUNDLED_MODELS[0]!);
+  const computerAudit: ComputerAuditEntry[] = [];
+
+  function computerState(): ComputerIntegrationState {
+    const enabled = settingsState.settings.computer.enabled;
+    return {
+      enabled,
+      browserContextEnabled: settingsState.settings.computer.browserContextEnabled,
+      browserBridgeRunning: enabled && settingsState.settings.computer.browserContextEnabled,
+      browserBridgeMessage: "浏览器预览模式不会启动真实本机桥接",
+      endpoint: "http://127.0.0.1:32145",
+      pairingToken: "browser-preview-pairing-token",
+      extensionDirectory: "browser-extension",
+      clipboardShortcutEnabled: settingsState.settings.computer.clipboardShortcutEnabled,
+      clipboardShortcutRegistered: false,
+      clipboardShortcut: "Ctrl+Shift+E",
+      sessionAllowedTools: [],
+      recentAudit: structuredClone(computerAudit),
+    };
+  }
 
   const bridge: PetAgentBridge = {
     async bootstrap() {
@@ -156,6 +177,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
           personality: update.personality ?? settingsState.settings.personality,
           heartbeat: update.heartbeat ?? settingsState.settings.heartbeat,
           voice: update.voice ?? settingsState.settings.voice,
+          computer: update.computer ?? settingsState.settings.computer,
           window: update.window ?? settingsState.settings.window,
         },
         hasApiKey: Boolean(update.apiKey) || (settingsState.hasApiKey && !update.clearApiKey),
@@ -234,6 +256,18 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
       return structuredClone(modelState);
     },
     async playPetAction(action) { actionListeners.forEach((listener) => listener(action)); },
+    async getComputerIntegrationState() { return computerState(); },
+    async rotateComputerPairingToken() { return computerState(); },
+    async copyComputerPairingInfo() {},
+    async openBrowserExtensionDirectory() {},
+    async clearComputerAudit() { computerAudit.splice(0); return computerState(); },
+    async executeComputerAction(id, decision) {
+      return {
+        id,
+        status: decision === "deny" ? "denied" : "completed",
+        message: decision === "deny" ? "好，这次不做。" : "浏览器预览已模拟执行",
+      };
+    },
     onProactiveMessage(listener) { proactiveListeners.add(listener); return () => proactiveListeners.delete(listener); },
     onSettingsChanged(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener); },
     onLocalSpeechStatusChanged(listener) {

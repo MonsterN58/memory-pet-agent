@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src data: blob:; worker-src blob:; object-src 'none'; base-uri 'none'; frame-src 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' data: blob:; worker-src blob:; object-src 'none'; base-uri 'none'; frame-src 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>记忆桌宠</title>
@@ -24,6 +24,12 @@
             <p class="assistant-line">把鼠标移到我身上，就可以和我说话啦。</p>
           </div>
         </div>
+        <section id="computer-action-card" class="computer-action-card" aria-live="polite" hidden>
+          <header><span>电脑操作预览</span><strong id="computer-action-title"></strong></header>
+          <p id="computer-action-description"></p>
+          <pre id="computer-action-preview"></pre>
+          <div id="computer-action-buttons" class="computer-action-buttons"></div>
+        </section>
         <form id="pet-composer" class="pet-composer">
           <span class="pet-command-prompt" aria-hidden="true">›</span>
           <input id="pet-message-input" maxlength="4000" autocomplete="off" aria-label="给桌宠发送消息" placeholder="输入一句话…" />
@@ -104,6 +110,50 @@
             <label>聊天模型<input id="setting-model" placeholder="服务支持的聊天模型名称" /></label>
             <label>聊天 API Key <span id="key-state" class="field-note"></span><input id="setting-api-key" type="password" autocomplete="off" placeholder="留空表示不修改" /></label>
             <label class="switch-row danger"><span>清除已保存的聊天 Key</span><input id="setting-clear-key" type="checkbox" /></label>
+          </fieldset>
+
+          <fieldset>
+            <legend>电脑协作、网页共读与权限</legend>
+            <label class="switch-row"><span>启用电脑协作</span><input id="setting-computer-enabled" type="checkbox" /></label>
+            <label class="switch-row"><span>启用浏览器右键共读桥接</span><input id="setting-browser-context" type="checkbox" /></label>
+            <label class="switch-row"><span>启用剪贴板解释快捷键</span><input id="setting-clipboard-shortcut" type="checkbox" /></label>
+            <div class="computer-status-card">
+              <header><strong id="computer-bridge-state">电脑协作未开启</strong><span id="computer-shortcut-state">快捷键未注册</span></header>
+              <code id="computer-bridge-endpoint">http://127.0.0.1:32145</code>
+              <small id="computer-bridge-message">桥接只监听本机回环地址。</small>
+            </div>
+            <span class="field-group-label">自然语言工作工具的默认策略</span>
+            <div class="two-columns computer-permission-grid">
+              <label>打开网页 / 搜索
+                <select id="setting-permission-open-url">
+                  <option value="ask">每次询问</option><option value="allow">始终允许</option><option value="deny">禁止</option>
+                </select>
+              </label>
+              <label>写入剪贴板
+                <select id="setting-permission-copy-text">
+                  <option value="ask">每次询问</option><option value="allow">始终允许</option><option value="deny">禁止</option>
+                </select>
+              </label>
+              <label>保存文本文件
+                <select id="setting-permission-save-text-file">
+                  <option value="ask">每次询问</option><option value="deny">禁止</option>
+                </select>
+              </label>
+              <label>启动白名单应用
+                <select id="setting-permission-launch-app">
+                  <option value="ask">每次询问</option><option value="allow">始终允许</option><option value="deny">禁止</option>
+                </select>
+              </label>
+            </div>
+            <div class="model-button-row computer-button-row">
+              <button id="computer-open-extension" type="button" class="secondary-button">打开扩展目录</button>
+              <button id="computer-copy-pairing" type="button" class="primary-button">复制配对信息</button>
+              <button id="computer-rotate-pairing" type="button" class="secondary-button">重置配对令牌</button>
+            </div>
+            <p class="model-import-note">Chrome / Edge 加载项目内 <code>browser-extension</code> 后，可在网页或选中文本上右键选择“解释、总结、记住、聊聊”。扩展只在你点击菜单时提交对应内容，不读取其他标签页；重置令牌会立即断开旧配对。</p>
+            <div class="computer-audit-header"><span class="field-group-label">最近电脑协作审计</span><button id="computer-clear-audit" type="button" class="text-button">清空</button></div>
+            <div id="computer-audit-list" class="computer-audit-list"><p>暂无电脑协作记录</p></div>
+            <p class="model-import-note">聊天中的“打开网页、搜索、复制、保存文件、启动记事本/计算器/资源管理器”会先形成固定参数的预览。保存文件始终保留原生路径选择确认；当前版本不向模型开放任意命令、任意文件系统或后台鼠标键盘控制。</p>
           </fieldset>
 
           <fieldset>
@@ -192,12 +242,12 @@
 
           <fieldset>
             <legend>移动与窗口</legend>
-            <label>漫游速度<input id="setting-roaming-speed" type="number" min="0.4" max="4" step="0.1" /></label>
+            <label>漫游速度<input id="setting-roaming-speed" type="number" min="0.4" max="4" step="0.05" /></label>
             <label class="switch-row"><span>允许桌面自由移动</span><input id="setting-roaming-enabled" type="checkbox" /></label>
             <label class="switch-row"><span>始终置顶</span><input id="setting-always-on-top" type="checkbox" /></label>
           </fieldset>
 
-          <p class="privacy-note">记忆、人格证据、设置和两组加密凭据保存在本机。项目内离线识别和本机朗读不上传语音或回复；Chromium 兼容识别可能使用联网服务。启用聊天模型时会向聊天端点发送当前输入、少量相关记忆和已形成的人格状态；只有选择云端 TTS 时才会把助手回复发送到独立 TTS 端点。</p>
+          <p class="privacy-note">记忆、人格证据、设置、电脑协作审计和两组加密凭据保存在本机。项目内离线识别和本机朗读不上传语音或回复；Chromium 兼容识别可能使用联网服务。启用聊天模型时会向聊天端点发送当前输入、少量相关记忆、已形成的人格状态，以及你通过网页右键、剪贴板或文件选择器明确共享的内容；只有选择云端 TTS 时才会把助手回复发送到独立 TTS 端点。</p>
           <div class="settings-actions">
             <button id="open-data-button" type="button" class="secondary-button">打开数据目录</button>
             <button type="submit" class="primary-button">保存设置</button>

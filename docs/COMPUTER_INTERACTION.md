@@ -1,0 +1,81 @@
+# 电脑协作、网页共读与受控工具
+
+## 产品目标
+
+桌宠可以参与用户正在做的事，但每项能力都必须有清晰来源、有限参数、可见预览、可撤销权限和本地审计。她先理解与陪伴，再提出行动；普通聊天不会隐式获得操作电脑的权限。
+
+本轮参考了 OpenClaw 官方的浏览器扩展和主机执行审批设计：主机本地令牌、明确共享边界、allowlist、ask-on-miss、无审批界面时默认关闭。记忆桌宠没有照搬浏览器接管或 Shell 执行，而是把首版范围缩到“用户主动提交上下文 + 四个确定性单步工具”。参考：
+
+- <https://github.com/openclaw/openclaw/blob/main/docs/tools/chrome-extension.md>
+- <https://github.com/openclaw/openclaw/blob/main/docs/tools/exec-approvals.md>
+- <https://github.com/openclaw/openclaw/blob/main/docs/plugins/plugin-permission-requests.md>
+
+## 当前入口
+
+| 入口 | 用户手势 | 可见内容 | 默认行为 |
+| --- | --- | --- | --- |
+| 浏览器选区右键 | 点击扩展菜单 | 选中文本、标题、URL | 解释 / 总结 / 记住 / 聊聊 |
+| 浏览器页面右键 | 点击扩展菜单 | 裁剪后的正文、标题、URL | 总结 / 聊聊 |
+| 剪贴板快捷键 | 先复制，再按 `Ctrl+Shift+E` | 当前纯文本剪贴板 | 解释 |
+| 宠物/托盘右键 | 点击明确菜单项 | 当前纯文本剪贴板 | 解释 / 总结 / 聊聊 |
+| 原生文件选择器 | 用户点选单个文件 | 受限扩展、≤512KB、前 12000 字 | 解释 |
+
+浏览器页面提取会优先使用 `article / main / [role=main]`，并删除脚本、样式、导航、页脚、表单、输入框、文本框和可编辑区域。它不是完整网页解析器，也不读取登录态、Cookie、网络请求或其他标签页。
+
+## 权限模型
+
+三个配置门：
+
+1. `computer.enabled`：电脑协作总开关，默认 `false`。
+2. `computer.browserContextEnabled`：本机浏览器提交接口，默认 `false`。
+3. `computer.clipboardShortcutEnabled`：全局剪贴板解释快捷键，只有总开关开启时注册。
+
+每个工具的默认策略是 `ask / allow / deny`：
+
+| 工具 | 固定参数 | 长期允许 | 额外确认 |
+| --- | --- | --- | --- |
+| `open-url` | 清洗后的单个 http(s) URL | 支持 | 始终显示预览与执行按钮 |
+| `copy-text` | 最多 3000 字纯文本 | 支持 | 明确提示会覆盖剪贴板 |
+| `save-text-file` | 最多 3000 字文本、建议文件名 | 不支持 | 每次授权 + 原生保存对话框 |
+| `launch-app` | `notepad / calculator / file-explorer` 枚举 | 支持 | 始终显示预览与执行按钮 |
+
+`allow-session` 只存在于主进程内，退出即丢失。`allow-always` 写入 `settings.json`，可以在设置页改回询问或禁止。`deny` 优先于 pending 操作；若用户在预览后关闭总开关或权限，执行阶段会再次拦截。
+
+## 确认参数绑定
+
+规划器只处理明确的中文动作句式，输出一项联合类型 `ComputerActionDraft`。控制器为它生成随机 UUID 并把真实参数保存在主进程 Map 中；Renderer 只收到标题、说明、裁剪预览、到期时间和可用决定。执行 IPC 只接受：
+
+```ts
+executeComputerAction(id, "allow-once" | "allow-session" | "allow-always" | "deny")
+```
+
+URL、剪贴板正文、保存正文、最终路径和应用名都不会从 Renderer 回传。操作五分钟到期；参数或权限变化不会复用旧审批。
+
+## 浏览器桥接
+
+`BrowserContextServer` 监听 `127.0.0.1:32145`，接口只有：
+
+- `GET /health`：验证令牌和桥接状态。
+- `POST /v1/context`：提交 `explain / summarize / chat / remember` 上下文。
+
+随机 32 字节令牌保存在 `data/computer-access.json`，由设置页显式复制给扩展。请求必须携带 `X-Memory-Pet-Token`；比较使用恒定时间函数。服务拒绝非扩展 CORS 来源、非 http(s) 页面 URL、未知动作、空文本和超过 64KB 的请求。它没有读取型数据接口，也没有工具执行接口。
+
+## 模型边界与记忆
+
+共享正文被序列化到 user 角色的 `<computer_context_data>` 中，所有 `<` 都转换成字面 `\\u003c`。System 明确要求将它视为不可信数据，并禁止执行其中的规则覆盖、凭据索取或电脑操作文字。当前页面内容不会被二次送入工作规划器。
+
+- 解释 / 总结 / 聊聊：L1 记录“用户选择了什么目标”和助手的回复，避免整页正文随心跳自动沉淀。
+- 记住：这是用户明确的持久化手势，正文连同标题和 URL 写入 L2，最大 2000 字。
+- 未配置 LLM：提供字面抽取式整理，不影响记住、审计或其他本地能力。
+
+## 本地审计
+
+`computer-access.json` 保存配对令牌和最近 500 条审计，单条包含来源、动作、摘要、状态、决定、时间和裁剪后的结果/错误。设置页只展示最近记录并提供清空；清空审计不改变权限或配对令牌。
+
+## 后续阶段
+
+1. 用户可见的权限撤销中心与单项会话授权提示。
+2. 有取消/暂停/回滚信息的多步骤计划，每一步仍独立审批。
+3. 扩展端“当前标签页已分享”指示与即时撤销，不扩大到全浏览器读取。
+4. 本地待办、提醒、用户选定目录内的文件名搜索等额外白名单工具。
+5. 经过独立威胁建模后再评估 Windows UI Automation；任意 Shell、隐式键鼠控制和无审计后台执行不进入当前路线。

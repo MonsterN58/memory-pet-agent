@@ -20,6 +20,17 @@ test("设置清洗会限制危险或越界输入", () => {
       ttsVoice: "v".repeat(200),
       ttsSpeed: 9,
     },
+    computer: {
+      enabled: "yes" as never,
+      browserContextEnabled: true,
+      clipboardShortcutEnabled: false,
+      permissions: {
+        "open-url": "everything" as never,
+        "copy-text": "allow",
+        "save-text-file": "allow",
+        "launch-app": "deny",
+      },
+    },
     window: { ...DEFAULT_SETTINGS.window, roamingSpeed: 99 },
   });
   assert.equal(settings.agentName.length, 30);
@@ -36,6 +47,12 @@ test("设置清洗会限制危险或越界输入", () => {
   assert.equal(settings.voice.ttsModel.length, 120);
   assert.equal(settings.voice.ttsVoice.length, 120);
   assert.equal(settings.voice.ttsSpeed, 4);
+  assert.equal(settings.computer.enabled, DEFAULT_SETTINGS.computer.enabled);
+  assert.equal(settings.computer.browserContextEnabled, true);
+  assert.equal(settings.computer.permissions["open-url"], "ask");
+  assert.equal(settings.computer.permissions["copy-text"], "allow");
+  assert.equal(settings.computer.permissions["save-text-file"], "ask");
+  assert.equal(settings.computer.permissions["launch-app"], "deny");
   assert.equal(settings.window.roamingSpeed, 4);
 });
 

@@ -45,6 +45,12 @@ export type PetUiCommand = "focus-chat" | "suspend";
 export type ControlPanelView = "settings" | "memory";
 export type VoiceRecognitionMode = "local" | "browser";
 export type VoiceOutputMode = "local" | "cloud";
+export type ComputerPermissionPolicy = "ask" | "allow" | "deny";
+export type ComputerTool = "open-url" | "copy-text" | "save-text-file" | "launch-app";
+export type ComputerActionDecision = "allow-once" | "allow-session" | "allow-always" | "deny";
+export type ComputerActionStatus = "pending" | "completed" | "denied" | "cancelled" | "failed";
+export type ComputerContextAction = "explain" | "summarize" | "chat" | "remember";
+export type ComputerContextSource = "browser" | "clipboard" | "file";
 export type PersonalityDimension = "warmth" | "curiosity" | "playfulness" | "directness" | "initiative" | "expressiveness";
 export type PersonalityStage = "blank" | "forming" | "developing" | "established";
 
@@ -179,6 +185,12 @@ export interface AgentSettings {
     ttsVoice: string;
     ttsSpeed: number;
   };
+  computer: {
+    enabled: boolean;
+    browserContextEnabled: boolean;
+    clipboardShortcutEnabled: boolean;
+    permissions: Record<ComputerTool, ComputerPermissionPolicy>;
+  };
   window: {
     alwaysOnTop: boolean;
     roamingEnabled: boolean;
@@ -206,6 +218,62 @@ export interface ChatResponse {
   source: "provider" | "local";
   memoryRefs: string[];
   warning?: string;
+  computerActions?: ComputerActionProposal[];
+}
+
+export interface SharedComputerContext {
+  action: ComputerContextAction;
+  source: ComputerContextSource;
+  text: string;
+  title?: string;
+  url?: string;
+  capturedAt: string;
+}
+
+export interface ComputerActionProposal {
+  id: string;
+  tool: ComputerTool;
+  title: string;
+  description: string;
+  preview: string;
+  severity: "info" | "warning";
+  requiresApproval: boolean;
+  allowedDecisions: ComputerActionDecision[];
+  expiresAt: string;
+}
+
+export interface ComputerActionResult {
+  id: string;
+  status: Exclude<ComputerActionStatus, "pending">;
+  message: string;
+}
+
+export interface ComputerAuditEntry {
+  id: string;
+  source: "chat" | ComputerContextSource | "settings";
+  kind: "context" | "tool";
+  action: ComputerTool | ComputerContextAction | "pairing-token";
+  summary: string;
+  status: ComputerActionStatus;
+  createdAt: string;
+  updatedAt: string;
+  decision?: ComputerActionDecision;
+  detail?: string;
+}
+
+export interface ComputerIntegrationState {
+  enabled: boolean;
+  browserContextEnabled: boolean;
+  browserBridgeRunning: boolean;
+  browserBridgeMessage: string;
+  endpoint: string;
+  pairingToken: string;
+  extensionDirectory: string;
+  clipboardShortcutEnabled: boolean;
+  clipboardShortcutRegistered: boolean;
+  clipboardShortcut: string;
+  sessionAllowedTools: ComputerTool[];
+  recentAudit: ComputerAuditEntry[];
 }
 
 export interface TtsAudio {
@@ -310,6 +378,12 @@ export interface PetAgentBridge {
   importLive2DModel(): Promise<ModelImportResult>;
   selectBundledModel(modelId: string): Promise<PublicModelState>;
   playPetAction(action: PetAction): Promise<void>;
+  getComputerIntegrationState(): Promise<ComputerIntegrationState>;
+  rotateComputerPairingToken(): Promise<ComputerIntegrationState>;
+  copyComputerPairingInfo(): Promise<void>;
+  openBrowserExtensionDirectory(): Promise<void>;
+  clearComputerAudit(): Promise<ComputerIntegrationState>;
+  executeComputerAction(id: string, decision: ComputerActionDecision): Promise<ComputerActionResult>;
   onProactiveMessage(listener: (message: ChatResponse) => void): () => void;
   onSettingsChanged(listener: (state: PublicSettingsState) => void): () => void;
   onLocalSpeechStatusChanged(listener: (status: LocalSpeechModelStatus) => void): () => void;

@@ -1,0 +1,17 @@
+:root { color-scheme: light; font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; color: #343044; }
+body { width: 310px; margin: 0; padding: 16px; background: #faf9ff; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+header > span { color: #7969e8; font-size: 22px; }
+header div { display: grid; }
+header strong { font-size: 16px; }
+header small { color: #777187; }
+p { margin: 0 0 14px; color: #615b70; }
+label { display: grid; gap: 5px; margin: 10px 0; font-weight: 600; }
+input, textarea { box-sizing: border-box; width: 100%; border: 1px solid #d9d5e8; border-radius: 9px; padding: 8px 9px; color: inherit; background: white; font: inherit; resize: vertical; }
+.actions { display: flex; gap: 8px; margin-top: 12px; }
+button { flex: 1; border: 0; border-radius: 9px; padding: 9px; background: #7969e8; color: white; font-weight: 700; cursor: pointer; }
+button.secondary { background: #ebe8f7; color: #4b4560; }
+output { display: block; min-height: 20px; margin-top: 12px; padding: 8px; border-radius: 8px; background: #f0eef7; }
+output[data-ok="true"] { background: #e6f5ed; color: #24704b; }
+output[data-ok="false"] { background: #fae9ec; color: #a23f50; }
+.privacy { display: block; margin-top: 12px; color: #817b8e; }

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>记忆桌宠网页共读</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span>●</span>
+      <div><strong>记忆桌宠</strong><small>网页共读桥接</small></div>
+    </header>
+    <p>先在桌宠“设置 → 电脑协作”中开启浏览器桥接并复制配对信息，再粘贴到这里。</p>
+    <label>桥接地址<input id="endpoint" value="http://127.0.0.1:32145" /></label>
+    <label>配对令牌或整段配对信息<textarea id="pairing-token" rows="3" spellcheck="false"></textarea></label>
+    <div class="actions">
+      <button id="save" type="button">保存并测试</button>
+      <button id="test" type="button" class="secondary">仅测试</button>
+    </div>
+    <output id="status">尚未测试连接</output>
+    <small class="privacy">扩展只在你点击右键菜单时读取对应选区或当前页正文；配对信息仅保存在本机浏览器。</small>
+    <script src="popup.js"></script>
+  </body>
+</html>

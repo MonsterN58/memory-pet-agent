@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   BootstrapState,
   ChatResponse,
+  ComputerActionDecision,
+  ComputerActionResult,
+  ComputerIntegrationState,
   ControlPanelView,
   HeartbeatResult,
   MemoryDeleteInput,
@@ -57,6 +60,15 @@ const bridge: PetAgentBridge = {
   importLive2DModel: () => ipcRenderer.invoke("model:import") as Promise<ModelImportResult>,
   selectBundledModel: (modelId: string) => ipcRenderer.invoke("model:select-bundled", modelId) as Promise<PublicModelState>,
   playPetAction: (action: PetAction) => ipcRenderer.invoke("pet:play-action", action) as Promise<void>,
+  getComputerIntegrationState: () =>
+    ipcRenderer.invoke("computer:get-state") as Promise<ComputerIntegrationState>,
+  rotateComputerPairingToken: () =>
+    ipcRenderer.invoke("computer:rotate-pairing") as Promise<ComputerIntegrationState>,
+  copyComputerPairingInfo: () => ipcRenderer.invoke("computer:copy-pairing") as Promise<void>,
+  openBrowserExtensionDirectory: () => ipcRenderer.invoke("computer:open-extension") as Promise<void>,
+  clearComputerAudit: () => ipcRenderer.invoke("computer:clear-audit") as Promise<ComputerIntegrationState>,
+  executeComputerAction: (id: string, decision: ComputerActionDecision) =>
+    ipcRenderer.invoke("computer:execute", id, decision) as Promise<ComputerActionResult>,
   onProactiveMessage: (listener: (message: ChatResponse) => void) => {
     const callback = (_event: Electron.IpcRendererEvent, message: ChatResponse) => listener(message);
     ipcRenderer.on("agent:proactive", callback);

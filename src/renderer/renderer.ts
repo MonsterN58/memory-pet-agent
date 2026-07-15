@@ -2,6 +2,9 @@ import { DEFAULT_SETTINGS } from "../common/defaults";
 import type {
   AgentSettings,
   ChatResponse,
+  ComputerActionDecision,
+  ComputerActionProposal,
+  ComputerIntegrationState,
   ControlPanelView,
   EditableMemoryKind,
   MemoryRecord,
@@ -65,6 +68,7 @@ async function initializePet(): Promise<void> {
   const messageInput = must<HTMLInputElement>("#pet-message-input");
   const sendButton = must<HTMLButtonElement>("#pet-send-button");
   const micButton = must<HTMLButtonElement>("#pet-mic-button");
+  const computerActionCard = must<HTMLElement>("#computer-action-card");
   const toast = must<HTMLElement>("#pet-toast");
   let model: PetModelAdapter = new DefaultPetAdapter();
   const mount = must<HTMLElement>("#pet-mount");
@@ -332,12 +336,56 @@ async function initializePet(): Promise<void> {
     appendLine("assistant", response.text);
     must<HTMLElement>("#pet-mode-badge").textContent = response.source === "provider" ? "模型在线" : "本地陪伴";
     reactions.handleResponse(response);
+    const hasComputerAction = renderComputerActions(response.computerActions ?? []);
     uiLifecycle.presentResponse(() => {
       void model.speak(response.text);
       voice.speak(response.text);
-      showDialog(false, 12_000, "caption");
+      showDialog(false, hasComputerAction ? undefined : 12_000, hasComputerAction ? "interactive" : "caption");
       if (response.warning) showToast(response.warning);
     });
+  }
+
+  function renderComputerActions(actions: ComputerActionProposal[]): boolean {
+    const proposal = actions[0];
+    if (!proposal) {
+      computerActionCard.hidden = true;
+      return false;
+    }
+    computerActionCard.hidden = false;
+    must<HTMLElement>("#computer-action-title").textContent = proposal.title;
+    must<HTMLElement>("#computer-action-description").textContent = proposal.description;
+    must<HTMLElement>("#computer-action-preview").textContent = proposal.preview;
+    const buttons = must<HTMLElement>("#computer-action-buttons");
+    buttons.replaceChildren();
+    const labels: Record<ComputerActionDecision, string> = {
+      "allow-once": proposal.requiresApproval ? "仅本次" : "执行",
+      "allow-session": "本次会话",
+      "allow-always": "始终允许",
+      deny: "不做",
+    };
+    for (const decision of [...proposal.allowedDecisions].reverse()) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = labels[decision];
+      if (decision === "allow-once") button.classList.add("primary");
+      if (decision === "deny") button.classList.add("danger");
+      button.addEventListener("click", async () => {
+        buttons.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+        try {
+          const result = await bridge.executeComputerAction(proposal.id, decision);
+          computerActionCard.hidden = true;
+          appendLine("assistant", result.message);
+          showToast(result.message);
+          if (result.status === "completed") setModelEmotion("happy");
+          showDialog(false, 6000, "caption");
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "电脑操作失败");
+          buttons.querySelectorAll("button").forEach((item) => { item.disabled = false; });
+        }
+      });
+      buttons.append(button);
+    }
+    return true;
   }
 
   async function sendMessage(raw?: string): Promise<void> {
@@ -465,6 +513,62 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     toastTimer = window.setTimeout(() => {
       panelToast.hidden = true;
     }, duration);
+  }
+
+  function renderComputerState(state: ComputerIntegrationState): void {
+    const bridgeState = must<HTMLElement>("#computer-bridge-state");
+    bridgeState.textContent = state.browserBridgeRunning
+      ? "浏览器桥接已就绪"
+      : state.enabled ? "浏览器桥接未开启" : "电脑协作未开启";
+    bridgeState.dataset.state = state.browserBridgeRunning ? "ready" : "off";
+    must<HTMLElement>("#computer-shortcut-state").textContent = state.clipboardShortcutRegistered
+      ? `${state.clipboardShortcut} 已注册`
+      : "快捷键未注册";
+    must<HTMLElement>("#computer-bridge-endpoint").textContent = state.endpoint;
+    const message = must<HTMLElement>("#computer-bridge-message");
+    message.textContent = state.browserBridgeMessage;
+    message.title = `扩展目录：${state.extensionDirectory}`;
+
+    const list = must<HTMLElement>("#computer-audit-list");
+    list.replaceChildren();
+    if (state.recentAudit.length === 0) {
+      const empty = document.createElement("p");
+      empty.textContent = "暂无电脑协作记录";
+      list.append(empty);
+      return;
+    }
+    const statusLabel = {
+      pending: "待确认", completed: "完成", denied: "拒绝", cancelled: "取消", failed: "失败",
+    } as const;
+    for (const entry of state.recentAudit) {
+      const item = document.createElement("article");
+      item.className = "computer-audit-item";
+      item.dataset.status = entry.status;
+      const badge = document.createElement("b");
+      badge.textContent = statusLabel[entry.status];
+      const summary = document.createElement("p");
+      summary.textContent = entry.summary;
+      const time = document.createElement("time");
+      time.dateTime = entry.updatedAt;
+      time.textContent = new Intl.DateTimeFormat("zh-CN", {
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      }).format(new Date(entry.updatedAt));
+      item.append(badge, summary, time);
+      if (entry.detail) {
+        const detail = document.createElement("small");
+        detail.textContent = entry.detail;
+        item.append(detail);
+      }
+      list.append(item);
+    }
+  }
+
+  async function refreshComputerState(): Promise<void> {
+    try {
+      renderComputerState(await bridge.getComputerIntegrationState());
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "电脑协作状态读取失败", 5000);
+    }
   }
 
   function renderCounts(snapshot: MemorySnapshot): void {
@@ -802,6 +906,13 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     input("#setting-api-key").value = "";
     input("#setting-clear-key").checked = false;
     must<HTMLElement>("#key-state").textContent = state.hasApiKey ? "已安全保存" : "未设置";
+    input("#setting-computer-enabled").checked = value.computer.enabled;
+    input("#setting-browser-context").checked = value.computer.browserContextEnabled;
+    input("#setting-clipboard-shortcut").checked = value.computer.clipboardShortcutEnabled;
+    must<HTMLSelectElement>("#setting-permission-open-url").value = value.computer.permissions["open-url"];
+    must<HTMLSelectElement>("#setting-permission-copy-text").value = value.computer.permissions["copy-text"];
+    must<HTMLSelectElement>("#setting-permission-save-text-file").value = value.computer.permissions["save-text-file"];
+    must<HTMLSelectElement>("#setting-permission-launch-app").value = value.computer.permissions["launch-app"];
     input("#setting-heartbeat-enabled").checked = value.heartbeat.enabled;
     input("#setting-heartbeat-interval").value = String(value.heartbeat.intervalMinutes);
     input("#setting-l1-max").value = String(value.heartbeat.l1MaxItems);
@@ -887,6 +998,17 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
         ttsVoice: input("#setting-tts-voice").value,
         ttsSpeed: numberFrom("#setting-tts-speed", current.voice.ttsSpeed),
       },
+      computer: {
+        enabled: input("#setting-computer-enabled").checked,
+        browserContextEnabled: input("#setting-browser-context").checked,
+        clipboardShortcutEnabled: input("#setting-clipboard-shortcut").checked,
+        permissions: {
+          "open-url": must<HTMLSelectElement>("#setting-permission-open-url").value as AgentSettings["computer"]["permissions"]["open-url"],
+          "copy-text": must<HTMLSelectElement>("#setting-permission-copy-text").value as AgentSettings["computer"]["permissions"]["copy-text"],
+          "save-text-file": must<HTMLSelectElement>("#setting-permission-save-text-file").value as AgentSettings["computer"]["permissions"]["save-text-file"],
+          "launch-app": must<HTMLSelectElement>("#setting-permission-launch-app").value as AgentSettings["computer"]["permissions"]["launch-app"],
+        },
+      },
       window: {
         alwaysOnTop: input("#setting-always-on-top").checked,
         roamingEnabled: input("#setting-roaming-enabled").checked,
@@ -905,6 +1027,40 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
   must<HTMLButtonElement>("#panel-close-button").addEventListener("click", () => void bridge.close());
   must<HTMLButtonElement>("#open-data-button").addEventListener("click", () => void bridge.showDataDirectory());
   must<HTMLButtonElement>("#open-data-button-memory").addEventListener("click", () => void bridge.showDataDirectory());
+  must<HTMLButtonElement>("#computer-open-extension").addEventListener("click", async () => {
+    try {
+      await bridge.openBrowserExtensionDirectory();
+      showToast("已打开浏览器扩展目录");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "扩展目录打开失败", 5000);
+    }
+  });
+  must<HTMLButtonElement>("#computer-copy-pairing").addEventListener("click", async () => {
+    try {
+      await bridge.copyComputerPairingInfo();
+      showToast("配对信息已复制，粘贴到浏览器扩展即可");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "配对信息复制失败", 5000);
+    }
+  });
+  must<HTMLButtonElement>("#computer-rotate-pairing").addEventListener("click", async () => {
+    if (!window.confirm("重新生成后，已经配对的浏览器扩展需要粘贴新令牌。继续吗？")) return;
+    try {
+      renderComputerState(await bridge.rotateComputerPairingToken());
+      showToast("已生成新配对令牌，旧令牌已失效");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "配对令牌更新失败", 5000);
+    }
+  });
+  must<HTMLButtonElement>("#computer-clear-audit").addEventListener("click", async () => {
+    if (!window.confirm("清空本机电脑协作审计记录吗？权限设置不会改变。")) return;
+    try {
+      renderComputerState(await bridge.clearComputerAudit());
+      showToast("电脑协作审计已清空");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "审计清理失败", 5000);
+    }
+  });
   must<HTMLButtonElement>("#personality-reset-button").addEventListener("click", async () => {
     if (!window.confirm("确定清空已经形成的人格证据吗？三级记忆不会被删除。")) return;
     try {
@@ -988,7 +1144,8 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     submit.disabled = true;
     try {
       populateSettings(await bridge.saveSettings(collectSettings()));
-      showToast("设置已保存，人格成长、TTS、漫游和心跳策略已更新");
+      await refreshComputerState();
+      showToast("设置已保存，电脑权限、人格、TTS、漫游和心跳策略已更新");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "设置保存失败", 5000);
     } finally {
@@ -997,13 +1154,17 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
   });
 
   bridge.onPanelView(openView);
-  bridge.onSettingsChanged(populateSettings);
+  bridge.onSettingsChanged((state) => {
+    populateSettings(state);
+    void refreshComputerState();
+  });
   bridge.onLocalSpeechStatusChanged(renderLocalSpeechStatus);
   bridge.onModelChanged(renderModelState);
   bridge.onPersonalityChanged(renderPersonality);
   try {
     const state = await bridge.bootstrap();
     populateSettings(state.settings);
+    await refreshComputerState();
     const statusRevision = localSpeechStatusRevision;
     const initialLocalStatus = await bridge.getLocalSpeechStatus();
     if (localSpeechStatusRevision === statusRevision) renderLocalSpeechStatus(initialLocalStatus);

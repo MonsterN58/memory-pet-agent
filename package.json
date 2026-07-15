@@ -55,6 +55,12 @@
       "package.json",
       "THIRD_PARTY_NOTICES.md"
     ],
+    "extraResources": [
+      {
+        "from": "browser-extension",
+        "to": "browser-extension"
+      }
+    ],
     "win": {
       "signAndEditExecutable": false,
       "target": [
