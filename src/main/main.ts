@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  desktopCapturer,
   dialog,
   globalShortcut,
   ipcMain,
@@ -27,15 +28,18 @@ import type {
   PetFocus,
   PetMotionFrame,
   PersonalityProfile,
+  RelationshipProfile,
   PublicModelState,
   SharedComputerContext,
   SettingsUpdate,
 } from "../common/types";
 import { AgentService } from "./agent-service";
+import { AgentToolRuntime } from "./agent-tools";
 import { BrowserContextServer } from "./computer/browser-context-server";
 import { ComputerCapabilityController } from "./computer/computer-capability-controller";
 import type { AllowedDesktopApp } from "./computer/computer-action-planner";
 import { DesktopMovementController } from "./desktop-movement-controller";
+import { DesktopAwarenessService, type DesktopScreenFrame } from "./desktop-awareness-service";
 import { HeartbeatService } from "./heartbeat-service";
 import {
   LocalAsrService,
@@ -50,6 +54,8 @@ import { hidePetWindow, sendToLiveWindow } from "./pet-window-lifecycle";
 import { OpenAICompatibleTtsClient } from "./provider/openai-compatible-tts";
 import { PersonalityEngine } from "./personality/personality-engine";
 import { PersonalityStore } from "./personality/personality-store";
+import { RelationshipEngine } from "./relationship/relationship-engine";
+import { RelationshipStore } from "./relationship/relationship-store";
 import { SettingsStore } from "./settings-store";
 
 let petWindow: BrowserWindow | undefined;
@@ -66,6 +72,8 @@ let modelStore: ModelStore;
 let ttsClient: OpenAICompatibleTtsClient;
 let localAsrService: LocalAsrService;
 let personalityEngine: PersonalityEngine;
+let relationshipEngine: RelationshipEngine;
+let desktopAwarenessService: DesktopAwarenessService;
 let computerController: ComputerCapabilityController;
 let browserContextServer: BrowserContextServer;
 let clipboardShortcutRegistered = false;
@@ -266,6 +274,7 @@ function refreshTrayMenu(): void {
     Menu.buildFromTemplate([
       { label: "和桌宠说话", click: focusChat },
       computerInteractionMenu(),
+      desktopAwarenessMenu(),
       {
         label: "允许自由移动",
         type: "checkbox",
@@ -360,11 +369,39 @@ function computerInteractionMenu(): MenuItemConstructorOptions {
   };
 }
 
+function desktopAwarenessMenu(): MenuItemConstructorOptions {
+  const settings = settingsStore.get();
+  return {
+    label: "桌面感知",
+    submenu: [
+      {
+        label: "允许 Agent / 心跳按需理解屏幕（发送给聊天模型）",
+        type: "checkbox",
+        checked: settings.awareness.screenCaptureEnabled,
+        click: (item) => void updateSettings({
+          awareness: { ...settings.awareness, screenCaptureEnabled: item.checked },
+        }),
+      },
+      {
+        label: "检测可见应用与新启动活动（本机）",
+        type: "checkbox",
+        checked: settings.awareness.processDetectionEnabled,
+        click: (item) => void updateSettings({
+          awareness: { ...settings.awareness, processDetectionEnabled: item.checked },
+        }),
+      },
+      { type: "separator" },
+      { label: "感知与隐私设置…", click: () => openControlPanel("settings") },
+    ],
+  };
+}
+
 function showPetContextMenu(): void {
   const settings = settingsStore.get();
   const template: MenuItemConstructorOptions[] = [
     { label: "和我说话", click: focusChat },
     computerInteractionMenu(),
+    desktopAwarenessMenu(),
     { type: "separator" },
     {
       label: "允许自由移动",
@@ -416,6 +453,25 @@ function browserExtensionDirectory(): string {
   return app.isPackaged
     ? join(process.resourcesPath, "browser-extension")
     : join(app.getAppPath(), "browser-extension");
+}
+
+async function captureCurrentDesktopScreen(): Promise<DesktopScreenFrame | undefined> {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const width = Math.min(960, Math.max(320, display.size.width));
+  const height = Math.max(180, Math.round(width * display.size.height / Math.max(1, display.size.width)));
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: { width, height },
+    fetchWindowIcons: false,
+  });
+  const source = sources.find((item) => item.display_id === String(display.id)) ?? sources[0];
+  if (!source || source.thumbnail.isEmpty()) return undefined;
+  const image = source.thumbnail.resize({ width, height, quality: "good" });
+  return {
+    dataUrl: `data:image/jpeg;base64,${image.toJPEG(68).toString("base64")}`,
+    width: image.getSize().width,
+    height: image.getSize().height,
+  };
 }
 
 function computerIntegrationState(): ComputerIntegrationState {
@@ -585,7 +641,11 @@ function broadcastLocalSpeechStatus(status: LocalSpeechModelStatus): void {
 }
 
 async function updateSettings(update: SettingsUpdate) {
+  const previousAwareness = settingsStore.get().awareness;
   const state = await settingsStore.update(update);
+  if (previousAwareness.processDetectionEnabled !== state.settings.awareness.processDetectionEnabled) {
+    desktopAwarenessService?.resetProcessBaseline();
+  }
   heartbeatService.restartTimer();
   petWindow?.setAlwaysOnTop(state.settings.window.alwaysOnTop);
   movementController.wake();
@@ -618,6 +678,11 @@ function broadcastPersonality(profile: PersonalityProfile = personalityEngine.ge
   sendToLiveWindow(controlPanelWindow, "personality:changed", profile);
 }
 
+function broadcastRelationship(profile: RelationshipProfile = relationshipEngine.getProfile()): void {
+  sendToLiveWindow(petWindow, "relationship:changed", profile);
+  sendToLiveWindow(controlPanelWindow, "relationship:changed", profile);
+}
+
 async function importLive2DModel(owner?: BrowserWindow): Promise<ModelImportResult> {
   const options: Electron.OpenDialogOptions = {
     title: "选择 Live2D Cubism 3/4/5 模型文件夹",
@@ -646,7 +711,7 @@ async function selectBundledModel(modelId: string): Promise<PublicModelState> {
   return state;
 }
 
-function sendProactive(response: Awaited<ReturnType<AgentService["createProactiveMessage"]>>): void {
+function sendProactive(response: Awaited<ReturnType<AgentService["createHeartbeatProactiveMessage"]>>): void {
   if (!petWindow) return;
   petWindow.showInactive();
   petWindow.webContents.send("agent:proactive", response);
@@ -657,17 +722,15 @@ function registerIpc(): void {
     settings: await settingsStore.getPublicState(),
     memory: memoryEngine.snapshot(),
     personality: personalityEngine.getProfile(),
+    relationship: relationshipEngine.getProfile(),
     providerMode: (await settingsStore.providerConfigured()) ? "provider" : "local",
   }));
   ipcMain.handle("agent:chat", async (_event, value: unknown) => {
     const text = sanitizeText(value);
     await heartbeatService.recordInteraction();
-    const plan = await computerController.planFromChat(text);
-    const response = await agentService.respond(text, {
-      computerProposal: plan.proposal,
-      computerWarning: plan.warning,
-    });
+    const response = await agentService.respond(text);
     broadcastPersonality();
+    broadcastRelationship();
     return response;
   });
   ipcMain.handle("memory:remember", async (_event, value: unknown) => {
@@ -695,6 +758,15 @@ function registerIpc(): void {
     }
     const profile = await personalityEngine.reset();
     broadcastPersonality(profile);
+    return profile;
+  });
+  ipcMain.handle("relationship:get", () => relationshipEngine.getProfile());
+  ipcMain.handle("relationship:reset", async (event) => {
+    if (BrowserWindow.fromWebContents(event.sender) !== controlPanelWindow) {
+      throw new Error("只能从设置窗口重置关系理解");
+    }
+    const profile = await relationshipEngine.reset();
+    broadcastRelationship(profile);
     return profile;
   });
   ipcMain.handle("heartbeat:run", () => heartbeatService.run("manual", true));
@@ -824,7 +896,7 @@ function registerIpc(): void {
     await computerController.clearAudit();
     return computerIntegrationState();
   });
-  ipcMain.handle("computer:execute", (event, id: unknown, decision: unknown) => {
+  ipcMain.handle("computer:execute", async (event, id: unknown, decision: unknown) => {
     if (BrowserWindow.fromWebContents(event.sender) !== petWindow) {
       throw new Error("电脑操作只接受桌宠窗口中的确认");
     }
@@ -833,7 +905,9 @@ function registerIpc(): void {
     if (typeof decision !== "string" || !decisions.includes(decision as ComputerActionDecision)) {
       throw new Error("授权决定无效");
     }
-    return computerController.execute(id, decision as ComputerActionDecision);
+    const result = await computerController.execute(id, decision as ComputerActionDecision);
+    agentService.recordComputerActionResult(result);
+    return result;
   });
 }
 
@@ -868,6 +942,8 @@ async function initialize(): Promise<void> {
   await memoryRepository.initialize();
   personalityEngine = new PersonalityEngine(new PersonalityStore(dataDirectory), () => settingsStore.get());
   await personalityEngine.initialize();
+  relationshipEngine = new RelationshipEngine(new RelationshipStore(dataDirectory));
+  await relationshipEngine.initialize();
   smokeLog("MEMORY_READY");
   modelStore = new ModelStore(dataDirectory, join(__dirname, "../renderer/live2d"));
   await modelStore.initialize();
@@ -875,14 +951,10 @@ async function initialize(): Promise<void> {
   if (modelSwitchSmoke) await modelStore.selectBundled("hiyori");
   smokeLog("MODEL_STORE_READY");
   memoryEngine = new MemoryEngine(memoryRepository, () => settingsStore.get());
-  agentService = new AgentService(memoryEngine, settingsStore, personalityEngine);
-  heartbeatService = new HeartbeatService(
-    memoryEngine,
-    memoryRepository,
-    agentService,
-    settingsStore,
-    personalityEngine,
-  );
+  desktopAwarenessService = new DesktopAwarenessService(() => settingsStore.get(), {
+    captureScreen: captureCurrentDesktopScreen,
+    providerConfigured: () => settingsStore.providerConfigured(),
+  });
   movementController = new DesktopMovementController(
     () => petWindow,
     () => settingsStore.get(),
@@ -906,6 +978,24 @@ async function initialize(): Promise<void> {
     },
   });
   await computerController.initialize();
+  const agentTools = new AgentToolRuntime({
+    memory: memoryEngine,
+    personality: personalityEngine,
+    relationship: relationshipEngine,
+    awareness: desktopAwarenessService,
+    computer: computerController,
+    getSettings: () => settingsStore.get(),
+  });
+  agentService = new AgentService(memoryEngine, settingsStore, personalityEngine, relationshipEngine, agentTools);
+  heartbeatService = new HeartbeatService(
+    memoryEngine,
+    memoryRepository,
+    agentService,
+    settingsStore,
+    personalityEngine,
+    relationshipEngine,
+    desktopAwarenessService,
+  );
   browserContextServer = new BrowserContextServer({
     getPairingToken: () => computerController.pairingToken(),
     onContext: handleSharedComputerContext,
@@ -917,7 +1007,7 @@ async function initialize(): Promise<void> {
   movementController.start();
   await refreshComputerIntegration();
   smokeLog("WINDOW_AND_TRAY_CREATED");
-  heartbeatService.start(sendProactive, () => broadcastPersonality());
+  heartbeatService.start(sendProactive, () => broadcastPersonality(), () => broadcastRelationship());
 }
 
 app.whenReady().then(initialize).catch((error) => {

@@ -11,6 +11,7 @@ test("设置清洗会限制危险或越界输入", () => {
     personality: { learningEnabled: true, adaptationRate: 99, minimumEvidence: 0 },
     provider: { ...DEFAULT_SETTINGS.provider, baseUrl: "file:///tmp/secrets", temperature: 99 },
     heartbeat: { ...DEFAULT_SETTINGS.heartbeat, intervalMinutes: 0, proactiveDailyLimit: 999 },
+    awareness: { screenCaptureEnabled: "yes" as never, processDetectionEnabled: true },
     voice: {
       ...DEFAULT_SETTINGS.voice,
       recognitionMode: "remote" as never,
@@ -41,6 +42,8 @@ test("设置清洗会限制危险或越界输入", () => {
   assert.equal(settings.provider.temperature, 2);
   assert.equal(settings.heartbeat.intervalMinutes, 1);
   assert.equal(settings.heartbeat.proactiveDailyLimit, 48);
+  assert.equal(settings.awareness.screenCaptureEnabled, false);
+  assert.equal(settings.awareness.processDetectionEnabled, true);
   assert.equal(settings.voice.recognitionMode, "local");
   assert.equal(settings.voice.ttsMode, "local");
   assert.equal(settings.voice.ttsBaseUrl, DEFAULT_SETTINGS.voice.ttsBaseUrl);

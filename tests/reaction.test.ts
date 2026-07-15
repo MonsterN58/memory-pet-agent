@@ -44,6 +44,26 @@ test("动作导演每条回复至多触发一次并限制连续强动作", () =>
   assert.equal(director.choose(reactionInput("reply-3", "excited", "这次也很棒！")), "cheer");
 });
 
+test("Agent 工具请求的动作优先于文本猜测并继续服从强动作冷却", () => {
+  let now = 15_000;
+  const director = new PetReactionDirector({ now: () => now, random: () => 0 });
+
+  assert.equal(director.choose({
+    ...reactionInput("tool-action-1", "curious", "让我想想。"),
+    requestedAction: "dance",
+  }), "dance");
+  now += 1_000;
+  assert.equal(director.choose({
+    ...reactionInput("tool-action-2", "happy", "再庆祝一下。"),
+    requestedAction: "jump",
+  }), undefined);
+  now += 12_000;
+  assert.equal(director.choose({
+    ...reactionInput("tool-action-3", "idle", "轻轻点头。"),
+    requestedAction: "nod",
+  }), "nod");
+});
+
 test("录音、拖拽、下落和落地期间延后自动动作", () => {
   const blocked: Array<{ voiceActive: boolean; motion: PetLocomotion }> = [
     { voiceActive: true, motion: "idle" },

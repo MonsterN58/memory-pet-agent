@@ -129,9 +129,13 @@ export class MemoryEngine {
   }
 
   async contextFor(query: string, limit = 6): Promise<MemoryRecord[]> {
-    const persistent = await this.repository.retrieveForContext(query, limit);
+    const persistent = await this.recall(query, limit);
     const instant = this.l1.slice(-6);
     return [...instant, ...persistent].slice(0, limit + 4);
+  }
+
+  async recall(query: string, limit = 6): Promise<MemoryRecord[]> {
+    return this.repository.retrieveForContext(query, limit);
   }
 
   async search(query: string, limit = 20): Promise<MemorySearchResult[]> {

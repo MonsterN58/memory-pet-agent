@@ -51,8 +51,41 @@ export type ComputerActionDecision = "allow-once" | "allow-session" | "allow-alw
 export type ComputerActionStatus = "pending" | "completed" | "denied" | "cancelled" | "failed";
 export type ComputerContextAction = "explain" | "summarize" | "chat" | "remember";
 export type ComputerContextSource = "browser" | "clipboard" | "file";
+export type AgentToolName =
+  | "memory_search"
+  | "memory_store"
+  | "self_profile"
+  | "relationship_profile"
+  | "desktop_observe"
+  | "computer_open_url"
+  | "computer_copy_text"
+  | "computer_save_text"
+  | "computer_launch_app"
+  | "pet_action";
+export type AgentToolStatus = "completed" | "approval-required" | "blocked" | "failed";
 export type PersonalityDimension = "warmth" | "curiosity" | "playfulness" | "directness" | "initiative" | "expressiveness";
 export type PersonalityStage = "blank" | "forming" | "developing" | "established";
+export type RelationshipStage = "new" | "acquainted" | "familiar" | "companion";
+export type RelationshipInsightKind =
+  | "identity"
+  | "preference"
+  | "goal"
+  | "routine"
+  | "interest"
+  | "concern"
+  | "work-style"
+  | "support-style";
+export type DesktopActivityKind =
+  | "browsing"
+  | "coding"
+  | "writing"
+  | "office"
+  | "communication"
+  | "terminal"
+  | "design"
+  | "media"
+  | "gaming";
+export type ProactiveTopicFeedback = "pending" | "welcomed" | "neutral" | "dismissed";
 
 export interface PersonalityTraitState {
   dimension: PersonalityDimension;
@@ -68,6 +101,66 @@ export interface PersonalityProfile {
   stage: PersonalityStage;
   interactionCount: number;
   traits: PersonalityTraitState[];
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RelationshipInsight {
+  id: string;
+  kind: RelationshipInsightKind;
+  topic: string;
+  summary: string;
+  confidence: number;
+  evidenceCount: number;
+  sourceIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RelationshipActivityPattern {
+  activity: DesktopActivityKind;
+  label: string;
+  observations: number;
+  confidence: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface RelationshipSharedMoment {
+  id: string;
+  summary: string;
+  importance: number;
+  sourceIds: string[];
+  happenedAt: string;
+  createdAt: string;
+}
+
+export interface RelationshipCareStyle {
+  initiativeAffinity: number;
+  practicalHelpAffinity: number;
+  quietCompanionshipAffinity: number;
+  evidenceCount: number;
+  updatedAt: string;
+}
+
+export interface RelationshipProactiveTopic {
+  id: string;
+  topic: string;
+  offeredAt: string;
+  feedback: ProactiveTopicFeedback;
+  feedbackAt?: string;
+}
+
+export interface RelationshipProfile {
+  version: 1;
+  stage: RelationshipStage;
+  interactionCount: number;
+  insights: RelationshipInsight[];
+  activityPatterns: RelationshipActivityPattern[];
+  sharedMoments: RelationshipSharedMoment[];
+  careStyle: RelationshipCareStyle;
+  recentProactiveTopics: RelationshipProactiveTopic[];
   summary: string;
   createdAt: string;
   updatedAt: string;
@@ -136,8 +229,28 @@ export interface HeartbeatEvent {
   consolidatedToL3: number;
   reflection: string;
   personalityUpdates?: number;
+  relationshipUpdates?: number;
+  thought?: HeartbeatThought;
+  awareness?: HeartbeatAwarenessSummary;
   proactiveMessage?: string;
   skippedProactiveReason?: string;
+}
+
+export interface HeartbeatThought {
+  selfReflection: string;
+  userUnderstanding: string;
+  relationshipFocus: string;
+  shouldReachOut: boolean;
+  proactiveTopic?: string;
+  reason: string;
+}
+
+export interface HeartbeatAwarenessSummary {
+  screenSharedWithProvider: boolean;
+  processScanCompleted: boolean;
+  visibleApplicationCount: number;
+  newApplicationCount: number;
+  activityLabels: string[];
 }
 
 export interface MemorySnapshot {
@@ -173,6 +286,10 @@ export interface AgentSettings {
     proactiveDailyLimit: number;
     quietHoursStart: number;
     quietHoursEnd: number;
+  };
+  awareness: {
+    screenCaptureEnabled: boolean;
+    processDetectionEnabled: boolean;
   };
   voice: {
     inputEnabled: boolean;
@@ -219,6 +336,16 @@ export interface ChatResponse {
   memoryRefs: string[];
   warning?: string;
   computerActions?: ComputerActionProposal[];
+  toolCalls?: AgentToolTrace[];
+  requestedAction?: PetAction;
+}
+
+export interface AgentToolTrace {
+  callId: string;
+  name: AgentToolName;
+  label: string;
+  status: AgentToolStatus;
+  summary: string;
 }
 
 export interface SharedComputerContext {
@@ -307,12 +434,14 @@ export interface HeartbeatResult {
   event: HeartbeatEvent;
   snapshot: MemorySnapshot;
   personality: PersonalityProfile;
+  relationship: RelationshipProfile;
 }
 
 export interface BootstrapState {
   settings: PublicSettingsState;
   memory: MemorySnapshot;
   personality: PersonalityProfile;
+  relationship: RelationshipProfile;
   providerMode: "provider" | "local";
 }
 
@@ -360,6 +489,8 @@ export interface PetAgentBridge {
   deleteMemory(input: MemoryDeleteInput): Promise<MemorySnapshot>;
   getPersonality(): Promise<PersonalityProfile>;
   resetPersonality(): Promise<PersonalityProfile>;
+  getRelationship(): Promise<RelationshipProfile>;
+  resetRelationship(): Promise<RelationshipProfile>;
   runHeartbeat(): Promise<HeartbeatResult>;
   saveSettings(update: SettingsUpdate): Promise<PublicSettingsState>;
   synthesizeSpeech(text: string): Promise<TtsAudio>;
@@ -394,4 +525,5 @@ export interface PetAgentBridge {
   onUiCommand(listener: (command: PetUiCommand) => void): () => void;
   onPanelView(listener: (view: ControlPanelView) => void): () => void;
   onPersonalityChanged(listener: (profile: PersonalityProfile) => void): () => void;
+  onRelationshipChanged(listener: (profile: RelationshipProfile) => void): () => void;
 }

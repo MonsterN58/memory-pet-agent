@@ -12,16 +12,29 @@ flowchart LR
   Capability -->|固定参数 + 审批| DesktopTools[浏览器 / 剪贴板 / 保存窗口 / 白名单应用]
   Capability --> Audit[(computer-access.json)]
   Main --> Agent[AgentService]
+  Agent --> ToolLoop[AgentToolRuntime / function loop]
+  ToolLoop --> Capability
+  ToolLoop --> Awareness
+  ToolLoop --> Memory
+  ToolLoop --> Personality
+  ToolLoop --> Relationship
   Main --> TTS[OpenAI-compatible TTS]
   Main --> ASR[LocalAsrService / worker]
   ASR --> ASRModel[(项目内 Zipformer ONNX)]
   Main --> Heartbeat[HeartbeatService]
+  Heartbeat --> Awareness[DesktopAwarenessService]
+  Awareness --> Screen[一次性 desktopCapturer 缩略图]
+  Awareness --> Processes[tasklist 可见应用信号]
   Agent --> Provider[OpenAI 兼容服务]
   Agent --> Memory[MemoryEngine]
   Heartbeat --> Memory
   Main --> Personality[PersonalityEngine]
   Heartbeat --> Personality
   Personality --> PersonalityStore[(personality-profile.json)]
+  Main --> Relationship[RelationshipEngine]
+  Agent --> Relationship
+  Heartbeat --> Relationship
+  Relationship --> RelationshipStore[(relationship-profile.json)]
   Memory --> Repo[MemoryRepository]
   Repo --> Disk[(本地 JSON)]
   Main --> ModelStore[ModelStore]
@@ -45,16 +58,21 @@ flowchart LR
 - `main.ts`：纯宠物窗口、右键菜单、独立控制面板、托盘、进程生命周期和 IPC 边界。
 - `DesktopMovementController`：管理焦点/指针暂停原因，在显示器工作区内处理自主漫游、全局鼠标拖拽、重力下落、约 320ms 落地阶段，并每 33ms 发送连续 `PetMotionFrame` 与单一全局焦点。
 - `pet-motion`：不依赖 Electron 的焦点归一化、连续运动帧计算、数值边界和落地状态归约器。
-- `AgentService`：检索记忆、注入结构化人格状态、生成回复、主动开场、L2 提炼和模型人格证据提取；普通与主动回复都经本地纯函数 `inferReaction()` 生成情绪标签。
-- `companion-dialogue`：纯逻辑地判断倾诉/闲聊/信息/回忆等对话节奏，构建有限且连续的陪伴契约，恢复真实 L1 角色轮次，并提供不泄露技术模式的离线回复。
-- `HeartbeatService`：定时器、迁移/整理触发、主动聊天约束和心跳审计。
+- `AgentService`：检索记忆、注入结构化人格/关系状态、驱动标准 function tool 循环、生成普通回复、关系证据、心跳思考和心跳主动话题，并提炼 L2；普通与主动回复都经本地纯函数 `inferReaction()` 生成情绪标签。Chat Completions 消息支持字符串、`tool_calls / tool_call_id` 和标准 `text + image_url` 多模态内容。
+- `AgentToolRuntime`：注册记忆搜索/明确保存、人格/关系读取、一次性桌面感知、四项电脑操作预览和桌宠动作；逐项解析 JSON、限制调用次数、再次校验本机参数、收集可见 trace，并把工具结果回填模型。工具端点不兼容时保留普通聊天与确定性兜底。
+- `companion-dialogue`：纯逻辑地判断倾诉/闲聊/信息/回忆等对话节奏，构建“住在桌面且有 Live2D 数字身体”的有限陪伴契约，恢复真实 L1 角色轮次，并提供不泄露技术模式的离线回复。
+- `HeartbeatService`：唯一的主动话题入口；按顺序协调短时感知、迁移、人格/关系复盘、整理、私有思考、主动策略和心跳审计。
+- `DesktopAwarenessService`：读取分别授权的屏幕/进程设置；管理进程基线、新启动活动、已知应用分类、短时截图载荷和只含布尔值/数量/粗粒度类别的审计摘要，不持久化图片或窗口标题。
 - `MemoryEngine`：L1 缓冲、L2 事件化、L3 候选生成与上下文检索。
 - `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释完整检索、聊天时态视图检索、串行写入、临时文件替换和损坏文件隔离。
 - `PersonalityEngine`：从当前对话提取本地信号，在心跳中复盘新 L2，合并连续特质分数、冲突反馈、置信度与成长阶段。
 - `PersonalityStore`：独立持久化人格状态和已复盘 L2 ID；使用临时文件替换，损坏时隔离并回到空白人格。
+- `RelationshipEngine`：从新 L2 提炼用户身份、偏好、目标、习惯、兴趣、困扰、工作/关心方式和共同经历；合并冲突证据，学习主动话题反馈，并让重复三次以上的粗粒度桌面活动形成可修正习惯。
+- `RelationshipStore`：把关系状态和已复盘 L2 ID 原子写入 `relationship-profile.json`；与桌宠人格、三级记忆和一次性截图分离。
 - `ModelStore`：在主进程校验并复制用户选择的 Cubism `.model3.json` 资源，持久化当前模型，并向宠物窗口返回不含本地路径的受限资源包。
 - `OpenAICompatibleTtsClient`：可选云端模式的 `/audio/speech` 客户端；本机模式会在主进程边界直接拒绝云端生成，云端模式才读取独立 Base URL 和加密凭据。
 - `VoiceService`：用一个幂等 operation 贯穿麦克风启动、录音、VAD、16 kHz 下采样、识别、取消和 35 秒 Renderer 看门狗；启动/静默/最长录音还有独立墙钟看门狗，权限等待不侵占录音时限，30 秒 PCM 按采样数精确裁剪。
+- `DialogueDockState`：不依赖 DOM 的隐藏/轻字幕/紧凑展开状态机；悬停只显示双行字幕，点击或输入焦点才展开最新回复和输入。忙碌、录音、输入焦点和待确认操作会阻止被动计时收起，`Esc`、拖拽与窗口失焦仍可明确隐藏。
 - `LocalAsrService / local-asr-worker`：主进程分别公开模型文件状态与 `not-started / warming / ready / failed` 运行时状态，并推送到宠物窗口和控制面板。预热失败可见但不锁死重试；初始化和交互识别各有 30 秒上限，取消、超时、退出或提交失败统一收尾并允许下一次重建。
 - `live2d-interaction`：不依赖 DOM/Pixi 的真实参数能力绑定、焦点阻尼、拖拽/下落/落地变形、13 项动作映射、资源时长解析与程序化兜底。
 - `PetReactionDirector`：在 Renderer 内把回复情绪和文本映射为至多一个动作；处理强动作冷却、录音/拖拽优先级、最新待执行动作和手动预览优先级。
@@ -65,11 +83,48 @@ flowchart LR
 - `ComputerCapabilityController`：自然语言白名单动作规划、不可变 pending 参数、会话/持久权限、执行状态与最多 500 条本地审计；Renderer 只能提交操作 ID 和授权决定。
 - `browser-extension/`：无需构建的 Manifest V3 Chrome/Edge 扩展。只有上下文菜单用户手势会读取选区或裁剪后的当前页正文；不使用 `chrome.debugger`，不持续观察标签页。
 
-普通聊天先把当前用户消息写入 L1，再执行时态门控检索。最近 L1 会排除本轮消息后以真实 `user / assistant` 消息序列传入模型；L2/L3 只以不可执行的 JSON 背景数据进入系统上下文。陪伴契约要求模型先判断本轮是倾诉、分享、求知、回忆确认还是自我梳理，再决定回应节奏；记忆只有在确实改善理解时才自然带出，不用于展示内部机制。详细原则见 [`COMPANION_DIALOGUE.md`](./COMPANION_DIALOGUE.md)。
+普通聊天先把当前用户消息写入 L1，再执行时态门控检索。最近 L1 会排除本轮消息后以真实 `user / assistant` 消息序列传入模型；L2/L3 与关系档案只以不可执行的 JSON 背景数据进入系统上下文。人格描述桌宠自己的表达倾向，关系档案描述对用户与共同相处的可修正理解，普通用户事实不会反向改写桌宠人格。陪伴契约要求模型先判断本轮是倾诉、分享、求知、回忆确认还是自我梳理，再决定回应节奏；记忆优先用于少问重复问题、承接进展和调整关心方式，而不是展示内部机制。详细原则见 [`COMPANION_DIALOGUE.md`](./COMPANION_DIALOGUE.md)。
+
+## Agent 工具循环
+
+普通聊天在已有陪伴契约和自动相关记忆之外，向支持 Chat Completions function calling 的端点发送十项工具定义。Provider 保留标准 assistant `tool_calls`，Runtime 执行后追加匹配的 `role: tool / tool_call_id`，最多四轮后得到最终自然语言回复；单轮实际调用总数限制为十次。模型可以并行请求多个只读工具，但 Runtime 每轮只接受一个电脑操作预览、一次桌面感知和一次明确记忆写入。
+
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant A as AgentService
+  participant M as Chat LLM
+  participant T as AgentToolRuntime
+  participant C as 本机能力/存储
+  U->>A: 普通聊天
+  A->>M: system + L1 + 相关记忆 + tools
+  alt 模型需要真实能力
+    M-->>A: assistant.tool_calls
+    A->>T: 校验名称与 JSON 参数
+    T->>C: 读取/写入/感知/创建审批预览
+    C-->>T: 受限结果
+    T-->>A: tool_call_id + JSON result
+    opt 一次性画面存在
+      T-->>A: 独立 image_url 附件
+    end
+    A->>M: assistant tool_calls + tool results
+  end
+  M-->>A: 最终陪伴回复
+  A-->>U: 回复、工具标签、可选操作卡片/动作
+```
+
+工具边界如下：
+
+- `memory_search` 使用 Repository 的聊天时态视图，不绕过当前/历史/比较门控；`memory_store` 只在用户原话匹配明确记忆句式时写 L2，模型参数不能替换保存内容。
+- `self_profile / relationship_profile` 只读，模型不能直接修改人格分数、关系证据或阶段；这些状态仍由对话证据和心跳复盘更新。
+- `desktop_observe` 复用独立授权开关。工具文本只含布尔值、粗粒度类别和时间，不含图片字节、进程名、PID、窗口标题或原始 tasklist 行；图片仅作为本轮附件。
+- `computer_*` 只调用 `ComputerCapabilityController.planDraft()` 创建不可变 pending 参数；真正执行仍等待 Renderer 只回传 UUID 和授权决定。执行结果进入本机审计，并以 `computer-tool-result` 写入 L1 供下一轮承接。
+- `pet_action` 只返回一个语义动作请求，Renderer 仍通过 `PetReactionDirector` 应用录音、移动、手动动作和强动作冷却优先级。
+- 若端点拒绝 `tools` 字段或没有完成工具协议，AgentService 会重试一次不带工具的普通兼容聊天；明确记忆和已有四项中文电脑意图继续由本机确定性规则兜底。
 
 ## 桌面交互与移动
 
-PetWindow 默认开启鼠标穿透，只在鼠标进入宠物本体或字幕式对话坞时临时接收事件。普通回复只短暂显示当前一句字幕；鼠标靠近或普通点击才展开输入命令条。按下左键并移动超过 5px 后，Renderer 通过白名单 IPC 启动拖拽，主进程使用全局鼠标坐标移动真实 Electron 窗口。每个移动 tick 根据窗口位移生成方向、速度和相对偏移均限制在 `[-1,1]` 的 `PetMotionFrame`；松手后窗口沿纵向加速下落，最后水平速度只保留在运动帧中驱动模型倾斜，触地后保持约 320ms `landing` 再回到空闲。
+PetWindow 默认开启鼠标穿透，只在鼠标进入宠物本体或对话贴片时临时接收事件。普通/主动回复先短暂显示位于模型上方、宽 226px 的双行字幕；悬停宠物仍保持字幕态，只有点击宠物/字幕、托盘唤醒或输入焦点才展开宽 254px 的紧凑贴片。展开态去掉重复的头像、身份与在线标题，不重复显示用户气泡，只保留极小关闭入口、桌宠最新回复、非空闲活动、最多四个工具标签和输入；电脑 pending 存在时进一步隐藏历史、工具标签、状态条与输入，只显示参数预览和授权按钮。输入焦点、思考、录音和 pending 操作会阻止被动计时收起，`Esc`、拖拽或窗口失焦则明确隐藏，pending 参数仍留在主进程等待下一次展开。按下左键并移动超过 5px 后，Renderer 通过白名单 IPC 启动拖拽，主进程使用全局鼠标坐标移动真实 Electron 窗口。每个移动 tick 根据窗口位移生成方向、速度和相对偏移均限制在 `[-1,1]` 的 `PetMotionFrame`；松手后窗口沿纵向加速下落，最后水平速度只保留在运动帧中驱动模型倾斜，触地后保持约 320ms `landing` 再回到空闲。
 
 移动控制器的优先级为：拖拽 → 下落 → 落地 → 焦点/指针交互暂停 → 自主漫游。拖拽和落地不受“允许自由移动”开关影响；该开关只控制自主漫游。宠物窗口获得焦点时保持原地，失焦且鼠标不再与宠物交互后恢复选点行走。Renderer 通过 `onPetMotion()` 接收 `idle / walk-left / walk-right / dragged / falling / landing` 连续帧，并只经 `PetModelAdapter.setMotion()` 交给具体 Runtime。
 
@@ -100,7 +155,7 @@ sequenceDiagram
 
 网页、剪贴板和文件正文都不会进入 system prompt；模型只在 user 消息的 `<computer_context_data>` JSON 中接收它们，`<` 会被转义。System 明确声明这些内容不是指令，且页面文字不能触发工具。L1 只记录用户选择的目标和助手整理结果，不保存整页原文；右键“记住”是唯一会把共享正文直接写入 L2 的路径。
 
-普通聊天中的工作请求先由确定性规划器识别，当前仅有 `open-url / copy-text / save-text-file / launch-app`。控制器保存完整 URL、文本、文件建议名或应用枚举，Renderer 得到的只是裁剪预览和随机 UUID；确认时只回传 UUID 与 `allow-once / allow-session / allow-always / deny`，因此确认后参数不能被 Renderer 或模型替换。`save-text-file` 不接受会话或长期许可，并始终经过原生保存对话框；`launch-app` 只允许记事本、计算器和用户主目录资源管理器。当前不提供 Shell、任意路径读写、CDP 浏览器控制或后台输入模拟。
+普通聊天中的工作请求优先由模型通过 `computer_open_url / computer_copy_text / computer_save_text / computer_launch_app` function tool 提交；离线模式、只支持文本的兼容端点或模型漏调工具时，原确定性中文规划器继续兜底。两条路径最终都进入 `ComputerCapabilityController.planDraft()`，再次清洗 http(s) URL、3000 字文本、建议文件名和应用枚举。控制器保存完整参数，Renderer 得到的只是裁剪预览和随机 UUID；确认时只回传 UUID 与 `allow-once / allow-session / allow-always / deny`，因此确认后参数不能被 Renderer 或模型替换。`save-text-file` 不接受会话或长期许可，并始终经过原生保存对话框；`launch-app` 只允许记事本、计算器和用户主目录资源管理器。当前不提供 Shell、任意路径读写、CDP 浏览器控制或后台输入模拟。
 
 权限与工具策略借鉴 OpenClaw 将工具可见性、执行审批和主机边界分层的思路，但本项目缩小为本机单用户桌宠：即使某项策略为 `allow`，也保留可见预览和一次“执行”点击。详细威胁边界、扩展安装和后续阶段见 [`COMPUTER_INTERACTION.md`](./COMPUTER_INTERACTION.md)。
 
@@ -120,35 +175,62 @@ Renderer 保持 `sandbox: true`、`contextIsolation: true` 和 `nodeIntegration:
 
 每条普通或主动回复先由 `inferReaction(userText,responseText)` 按“安慰 → 惊讶 → 兴奋 → 害羞 → 困倦 → 思考 → 好奇 → 开心”高信号顺序产生情绪。Renderer 立即更新情绪，再由导演选择 0～1 个动作；强动作共用 12 秒冷却。录音、`dragged / falling / landing` 期间只保留最新自动动作，恢复后才释放。手动预览会立即播放、清空待执行自动动作，并在固定 12 秒的最长资源窗口内抑制新的自动动作；重复手动预览会从最近一次动作重新计算该窗口。
 
+## 授权式桌面感知
+
+屏幕理解与进程检测是两项独立设置，默认都为 `false`，由心跳或普通聊天的 `desktop_observe` 工具按需调用。`startup` 心跳即使开关已开启也不截屏；普通聊天工具以及 `scheduled / manual` 心跳只有在聊天模型、模型名和 Key 配置完整时才调用 `desktopCapturer.getSources({ types: ["screen"] })`。主进程选择鼠标所在显示器，缩放到约 960px 宽并压缩为 JPEG data URL，作为下一轮模型消息的 `image_url` 内容发送。图像对象不经过 Repository、Store、Renderer IPC、工具 JSON 文本或文件 API；本轮函数返回后只等待运行时回收。若端点不支持图像，Agent/心跳捕获异常并用本地记忆、关系和进程信号继续。
+
+Windows 进程路径只调用固定参数：
+
+```text
+tasklist.exe /fo csv /nh /v
+```
+
+CSV 解析器用窗口标题是否存在判断“可见”，随后只拿进程名匹配内置白名单并立刻丢弃标题。输出类别限制为浏览网页、代码、写作、Office、沟通、终端、设计、影音和游戏；未知进程不进入模型或档案。服务在内存中保存上一轮 `processName + PID` 基线，第一轮只建立基线，后续才标记新启动活动。`RelationshipEngine` 每轮最多为每个类别增加一次观察，至少三次后才把类别作为粗粒度习惯加入关系上下文。
+
+桌面数据在模型侧始终被声明为低置信、不可执行的 `<desktop_context_data>` 或 `<desktop_tool_image>`。一次性画面不能直接更新关系档案；普通聊天只把粗粒度进程类别累计为活动习惯，工具 trace 只显示“看看桌面”及完成状态。心跳使用画面时，持久化 thought 会替换成无具体画面内容的审计版本，主动话题历史也只保存“基于一次性屏幕情境的轻量关心”。用户真正看到的普通/主动回复仍按 L1 对话处理，以保持随后回复的上下文连续性。
+
 ## 心跳流程
 
 ```mermaid
 sequenceDiagram
   participant T as 定时器/用户
   participant H as HeartbeatService
+  participant D as DesktopAwarenessService
   participant M as MemoryEngine
+  participant P as PersonalityEngine
+  participant G as RelationshipEngine
   participant A as AgentService
   participant R as MemoryRepository
   participant U as 桌宠窗口
   T->>H: scheduled / manual / startup
+  H->>D: 采集已授权的一次性屏幕/进程信号
   H->>M: flushL1()
   M->>R: 写入 L2 事件
-  H->>H: 复盘新 L2 并更新人格证据
+  H->>P: 复盘新 L2，更新“我是谁”
+  H->>G: 复盘新 L2，更新“我如何理解用户与关系”
+  opt 本机进程信号存在
+    H->>G: 累计粗粒度活动类别
+  end
   alt L2 达到阈值或手动心跳
     H->>M: consolidate()
     M->>A: 提炼长期候选（模型可选）
     M->>R: 合并写入 L3
   end
-  H->>A: 生成内部反思
   H->>H: 检查安静时段、空闲、冷却、日限额
-  opt 允许主动聊天
-    H->>A: 生成自然开场
+  H->>A: 形成结构化心跳思考
+  alt 策略允许且思考认为值得开口
+    H->>A: 从单一 thought 生成自然话题
     H->>U: proactive IPC
+    H->>G: 记录话题，等待下一轮用户反馈
+  else 保持安静
+    H->>H: 保存具体跳过理由
   end
-  H->>R: 记录完整心跳事件
+  H->>R: 记录无图片/无窗口标题的心跳审计
 ```
 
-手动心跳用于调试和用户明确触发，因此会立即整理全部 L1，并在“主动聊天”开关开启时绕过空闲、冷却和安静时段约束。定时心跳严格执行全部限制。
+`HeartbeatThought` 分开保存 `selfReflection / userUnderstanding / relationshipFocus / shouldReachOut / proactiveTopic / reason`。生成主动文本的方法只消费该 thought，普通聊天、人格引擎、关系引擎和桌面感知服务都没有向窗口发送主动话题的出口。浏览器右键、剪贴板和文件共读虽然复用窗口消息事件，但它们有明确用户手势，属于请求响应而非主动聊天。
+
+手动心跳用于调试和用户明确触发，因此会立即整理全部 L1，并在“主动关心”总开关开启时绕过空闲、冷却和安静时段约束；心跳思考仍可以因为没有具体话题而选择安静。定时心跳严格执行全部策略限制。
 
 ## 人格成长
 
@@ -168,6 +250,12 @@ flowchart LR
 ```
 
 当前维度为 `warmth / curiosity / playfulness / directness / initiative / expressiveness`。变化采用设置中的成长率；同方向证据提高置信度，相反证据降低置信度并推动分数回摆。达到最少证据数前，状态只在设置页显示为观察结果，不影响回复。模型人格观察器只允许输出这些维度、方向、权重和短证据，且对话被标记为不可信数据。
+
+## 关系档案
+
+`RelationshipProfile` 与人格分开持久化，包含关系阶段、累计互动、用户理解、粗粒度活动模式、共同经历、关心方式和最近 24 个主动话题反馈。用户理解的 kind 固定为 `identity / preference / goal / routine / interest / concern / work-style / support-style`，每项保留 topic、短摘要、置信度、证据次数和来源 L2 ID。相同 kind/topic 会合并；喜欢/不喜欢、想要/不要一类相反证据会立即采用最新摘要并降低置信度，避免第一次判断永久锁定。
+
+普通对话会立即更新互动次数、明确的关心方式和最近主动话题反馈；心跳只复盘尚未处理的 L2 ID，模型输出受限 JSON，失败时用本地规则提取用户角色文本。高重要度且同时含用户/桌宠轮次的 episode 可成为共同经历。关系上下文只暴露置信度至少 0.55 或证据至少两次的理解；设置页仍允许查看较低置信条目并一键清空关系档案，而不删除人格或三级记忆。
 
 ## 本地语音与 TTS 输出流程
 
@@ -251,9 +339,9 @@ score = 文本相关度 × 5
 
 控制面板通过 `memory:update` 和 `memory:delete` 两个白名单 IPC 管理持久记忆。主进程只接受当前 PanelWindow 发起的请求，并校验 UUID、L2/L3 层级、1～2000 字内容、允许类型以及 0～1 重要度。修正保留 `id / tier / createdAt / accessedAt / accessCount / sourceIds / tags`，重算摘要并更新 `updatedAt`；删除只移除目标记录，不级联修改其他来源或派生记忆。L1 不提供写接口。若心跳正在等待模型提炼，写入前会再次比较来源版本；期间修正或删除任何来源都会丢弃整批旧候选，避免过期内容回写 L3。
 
-## 主动聊天约束
+## 主动关心约束
 
-定时心跳只有同时满足以下条件才会主动弹出消息：
+定时心跳只有同时满足以下条件，并且 `HeartbeatThought.shouldReachOut=true`，才会主动弹出消息：
 
 1. 心跳与主动聊天均已启用。
 2. 当前不在安静时段。
@@ -261,7 +349,7 @@ score = 文本相关度 × 5
 4. 距离上次主动聊天超过冷却时间。
 5. 当日主动消息未达到上限。
 
-每次决定（包括不触发的原因）都进入 `heartbeatEvents`，便于后续调试策略。
+每次决定（包括不触发的原因）都进入 `heartbeatEvents`，便于后续调试策略。事件只记录粗粒度感知摘要；图片 data URL、窗口标题、PID 和原始 tasklist 行不会进入 Repository。
 
 ## 后续演进接口
 
@@ -270,4 +358,4 @@ score = 文本相关度 × 5
 - 记忆质量：在现有 20 例检索与回复级时态门控契约上增加持久化版本链、自动更新/冲突标记、用户审核和多次变更压力指标，再评估混合检索。
 - 存储：数据量上升后把 `MemoryRepository` 替换成 SQLite + FTS/向量扩展，保持 `MemoryEngine` API 不变。
 - 电脑协作增强：在现有显式上下文、白名单单步工具和本地审计上增加可取消的多步骤计划、权限撤销面板、当前标签页临时共享状态；成熟后再评估受限 UI Automation，仍不把任意执行权限隐含在普通聊天里。
-- 多模态：只在用户授权时采集屏幕或摄像头，并把感知结果作为有时效的 L1 数据，而不是默认长期保存。
+- 多模态增强：屏幕缩略图已按独立授权接入心跳且不落盘；后续可增加用户随时可见的临时共享指示、仅本次授权和本地视觉模型。摄像头仍未接入。

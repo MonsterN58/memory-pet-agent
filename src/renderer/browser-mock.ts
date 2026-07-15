@@ -1,6 +1,7 @@
 import { DEFAULT_SETTINGS } from "../common/defaults";
 import type {
   ChatResponse,
+  ComputerActionProposal,
   ComputerAuditEntry,
   ComputerIntegrationState,
   ControlPanelView,
@@ -15,6 +16,7 @@ import type {
   PetMotionFrame,
   PetUiCommand,
   PersonalityProfile,
+  RelationshipProfile,
   PublicModelState,
   PublicSettingsState,
 } from "../common/types";
@@ -56,6 +58,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     recentHeartbeats: [],
   };
   let personalityProfile: PersonalityProfile = blankPersonalityProfile();
+  let relationshipProfile: RelationshipProfile = blankRelationshipProfile();
   const proactiveListeners = new Set<(message: ChatResponse) => void>();
   const settingsListeners = new Set<(state: PublicSettingsState) => void>();
   const localSpeechStatusListeners = new Set<(status: LocalSpeechModelStatus) => void>();
@@ -66,6 +69,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   const actionListeners = new Set<(action: PetAction) => void>();
   const modelListeners = new Set<(state: PublicModelState) => void>();
   const personalityListeners = new Set<(profile: PersonalityProfile) => void>();
+  const relationshipListeners = new Set<(profile: RelationshipProfile) => void>();
   let previewDragging = false;
   let resourceModelId = "hiyori";
   let modelState = createModelState(BUNDLED_MODELS[0]!);
@@ -95,6 +99,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
         settings: structuredClone(settingsState),
         memory: structuredClone(memory),
         personality: structuredClone(personalityProfile),
+        relationship: structuredClone(relationshipProfile),
         providerMode: "local",
       };
     },
@@ -106,11 +111,47 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
       personalityProfile.summary = `已观察 ${personalityProfile.interactionCount} 次互动，但证据仍不足，暂不固定任何性格标签。`;
       personalityProfile.updatedAt = new Date().toISOString();
       personalityListeners.forEach((listener) => listener(structuredClone(personalityProfile)));
+      relationshipProfile.interactionCount += 1;
+      relationshipProfile.stage = relationshipProfile.interactionCount >= 3 ? "acquainted" : "new";
+      relationshipProfile.summary = `我们已经有 ${relationshipProfile.interactionCount} 次互动，仍在从真实交流中确认彼此的习惯。`;
+      relationshipProfile.updatedAt = new Date().toISOString();
+      relationshipListeners.forEach((listener) => listener(structuredClone(relationshipProfile)));
+      const previewAction: ComputerActionProposal[] | undefined = text.includes("操作预览") ? [{
+        id: crypto.randomUUID(),
+        tool: "open-url" as const,
+        title: "打开项目主页",
+        description: "我会使用默认浏览器打开这个网页，地址在确认后不会变化。",
+        preview: "https://github.com/MonsterN58/memory-pet-agent",
+        severity: "info" as const,
+        requiresApproval: true,
+        allowedDecisions: ["allow-once", "allow-session", "allow-always", "deny"],
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      }] : undefined;
+      const previewTools = text.includes("工具调用") || previewAction ? [
+        {
+          callId: crypto.randomUUID(),
+          name: "memory_search" as const,
+          label: "回想记忆",
+          status: "completed" as const,
+          summary: "找到 2 条相关记忆",
+        },
+        ...(previewAction ? [{
+          callId: crypto.randomUUID(),
+          name: "computer_open_url" as const,
+          label: "准备打开网页",
+          status: "approval-required" as const,
+          summary: "等待用户确认",
+        }] : []),
+      ] : undefined;
       return {
-        text: "我听到了。等下一次心跳，我会把这段经历送进 L2，再提炼出值得长期保留的部分。",
+        text: text.includes("长回复")
+          ? "我会先陪你把这件事慢慢说清楚。你不需要一次把所有情绪整理好，我们可以从今天最让你在意的那一小段开始；如果你愿意，我也会记住其中真正重要的变化，等以后再聊到时自然地接上，而不是像第一次听见那样重新问你。"
+          : "我听到了。重要的部分我会慢慢记住，也会在以后合适的时候自然接上。",
         emotion: "happy",
         source: "local",
         memoryRefs: [],
+        computerActions: previewAction,
+        toolCalls: previewTools,
       };
     },
     async remember(text) {
@@ -158,6 +199,12 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
       personalityListeners.forEach((listener) => listener(structuredClone(personalityProfile)));
       return structuredClone(personalityProfile);
     },
+    async getRelationship() { return structuredClone(relationshipProfile); },
+    async resetRelationship() {
+      relationshipProfile = blankRelationshipProfile();
+      relationshipListeners.forEach((listener) => listener(structuredClone(relationshipProfile)));
+      return structuredClone(relationshipProfile);
+    },
     async runHeartbeat() {
       const consolidated = memory.l2.splice(0);
       memory.l3.push(...consolidated.map((item) => ({ ...item, tier: "L3" as const })));
@@ -165,7 +212,12 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
         id: crypto.randomUUID(), reason: "manual" as const, createdAt: new Date().toISOString(),
         movedToL2: 0, consolidatedToL3: consolidated.length, reflection: "预览模式心跳已完成。",
       };
-      return { event, snapshot: structuredClone(memory), personality: structuredClone(personalityProfile) };
+      return {
+        event,
+        snapshot: structuredClone(memory),
+        personality: structuredClone(personalityProfile),
+        relationship: structuredClone(relationshipProfile),
+      };
     },
     async saveSettings(update) {
       settingsState = {
@@ -176,6 +228,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
           provider: update.provider ?? settingsState.settings.provider,
           personality: update.personality ?? settingsState.settings.personality,
           heartbeat: update.heartbeat ?? settingsState.settings.heartbeat,
+          awareness: update.awareness ?? settingsState.settings.awareness,
           voice: update.voice ?? settingsState.settings.voice,
           computer: update.computer ?? settingsState.settings.computer,
           window: update.window ?? settingsState.settings.window,
@@ -281,6 +334,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     onUiCommand(listener) { uiListeners.add(listener); return () => uiListeners.delete(listener); },
     onPanelView(listener) { panelListeners.add(listener); return () => panelListeners.delete(listener); },
     onPersonalityChanged(listener) { personalityListeners.add(listener); return () => personalityListeners.delete(listener); },
+    onRelationshipChanged(listener) { relationshipListeners.add(listener); return () => relationshipListeners.delete(listener); },
   };
   window.petAgent = bridge;
 
@@ -314,6 +368,29 @@ function blankPersonalityProfile(): PersonalityProfile {
     interactionCount: 0,
     traits: [],
     summary: "尚未形成稳定人格，正在从真实互动中认识自己的表达方式。",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function blankRelationshipProfile(): RelationshipProfile {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    stage: "new",
+    interactionCount: 0,
+    insights: [],
+    activityPatterns: [],
+    sharedMoments: [],
+    careStyle: {
+      initiativeAffinity: 0.5,
+      practicalHelpAffinity: 0.5,
+      quietCompanionshipAffinity: 0.5,
+      evidenceCount: 0,
+      updatedAt: now,
+    },
+    recentProactiveTopics: [],
+    summary: "彼此还在初识，我会从真实互动中慢慢了解你，而不是先替你下定义。",
     createdAt: now,
     updatedAt: now,
   };

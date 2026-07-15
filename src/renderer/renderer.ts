@@ -1,6 +1,7 @@
 import { DEFAULT_SETTINGS } from "../common/defaults";
 import type {
   AgentSettings,
+  AgentToolTrace,
   ChatResponse,
   ComputerActionDecision,
   ComputerActionProposal,
@@ -19,10 +20,19 @@ import type {
   PetMotionFrame,
   PersonalityDimension,
   PersonalityProfile,
+  RelationshipInsightKind,
+  RelationshipProfile,
   SettingsUpdate,
 } from "../common/types";
 import type { PetModelAdapter } from "./model-adapter";
 import { DefaultPetAdapter } from "./model-adapter";
+import {
+  DialogueDockState,
+  dialogueActivityCopy,
+  type DialogueActivity,
+  type DialogueDismissReason,
+  type DialogueDockPresentation,
+} from "./dialogue-dock-state";
 import { Live2DPetAdapter } from "./live2d-pet-adapter";
 import { localSpeechControlState, localSpeechStatusText } from "./local-speech-status";
 import { PetReactionCoordinator, PetReactionDirector } from "./pet-reaction-director";
@@ -65,16 +75,30 @@ async function initializePet(): Promise<void> {
   const hitArea = must<HTMLElement>("#pet-hit-area");
   const dialog = must<HTMLElement>("#pet-dialog");
   const dialogueLog = must<HTMLElement>("#pet-dialogue-log");
-  const messageInput = must<HTMLInputElement>("#pet-message-input");
+  const messageInput = must<HTMLTextAreaElement>("#pet-message-input");
   const sendButton = must<HTMLButtonElement>("#pet-send-button");
   const micButton = must<HTMLButtonElement>("#pet-mic-button");
+  const closeDialogButton = must<HTMLButtonElement>("#pet-dialog-close");
+  const captionSummary = must<HTMLButtonElement>("#pet-caption-summary");
+  const captionText = must<HTMLElement>("#pet-caption-text");
+  const captionHint = must<HTMLElement>("#pet-caption-hint");
+  const activityRow = must<HTMLElement>("#pet-activity-row");
+  const activityLabel = must<HTMLElement>("#pet-activity-label");
+  const activityDetail = must<HTMLElement>("#pet-activity-detail");
+  const toolStrip = must<HTMLElement>("#agent-tool-strip");
   const computerActionCard = must<HTMLElement>("#computer-action-card");
   const toast = must<HTMLElement>("#pet-toast");
+  const dockState = new DialogueDockState();
   let model: PetModelAdapter = new DefaultPetAdapter();
   const mount = must<HTMLElement>("#pet-mount");
   model.mount(mount);
   model.resize(mount.clientWidth, mount.clientHeight);
   let busy = false;
+  let voiceActive = false;
+  let hasPendingComputerAction = false;
+  let activeComputerProposal: ComputerActionProposal | undefined;
+  let currentActivity: DialogueActivity = "ready";
+  let renderedPresentation: DialogueDockPresentation = "hidden";
   let hideTimer: number | undefined;
   let toastTimer: number | undefined;
   let clickThrough = true;
@@ -102,29 +126,66 @@ async function initializePet(): Promise<void> {
     void bridge.setPetClickThrough(ignore);
   }
 
+  function updateCaptionHint(): void {
+    if (hasPendingComputerAction) {
+      captionHint.textContent = "有一项操作待确认 · 点击查看";
+      return;
+    }
+    captionHint.textContent = currentActivity === "ready"
+      ? "靠近继续聊"
+      : dialogueActivityCopy(currentActivity).label;
+  }
+
+  function setActivity(activity: DialogueActivity, detail?: string): void {
+    currentActivity = activity;
+    const copy = dialogueActivityCopy(activity);
+    activityLabel.textContent = copy.label;
+    activityDetail.textContent = detail ?? copy.detail;
+    activityRow.dataset.activity = activity;
+    dialog.dataset.activity = activity;
+    updateCaptionHint();
+  }
+
+  function renderDockPresentation(): void {
+    const presentation = dockState.presentation();
+    if (presentation === renderedPresentation) return;
+    const wasVisible = renderedPresentation !== "hidden";
+    const visible = presentation !== "hidden";
+    renderedPresentation = presentation;
+    petApp.classList.toggle("dialog-visible", visible);
+    petApp.classList.toggle("dialog-expanded", presentation === "expanded");
+    dialog.setAttribute("aria-hidden", String(!visible));
+    dialog.setAttribute("aria-expanded", String(presentation === "expanded"));
+    if (wasVisible !== visible) void bridge.setPetInteraction(visible);
+  }
+
   function showDialog(
     focusInput = false,
     autoHideMs?: number,
-    presentation: "interactive" | "caption" = "interactive",
+    presentation: Exclude<DialogueDockPresentation, "hidden"> = "expanded",
   ): void {
     if (pointerDown) return;
     if (hideTimer) window.clearTimeout(hideTimer);
-    petApp.classList.add("dialog-visible");
-    const showComposer = presentation === "interactive" || busy || dialog.contains(document.activeElement);
-    petApp.classList.toggle("composer-visible", showComposer);
-    void bridge.setPetInteraction(true);
+    dockState.setFocusWithin(dialog.contains(document.activeElement));
+    if (presentation === "expanded") dockState.expand();
+    else dockState.showCaption();
+    renderDockPresentation();
     setClickThrough(false);
     if (focusInput) window.setTimeout(() => messageInput.focus(), 30);
     if (autoHideMs) hideTimer = window.setTimeout(() => {
-      if (hideDialog()) setClickThrough(true);
+      if (hideDialog("auto")) setClickThrough(true);
     }, autoHideMs);
   }
 
-  function hideDialog(): boolean {
-    if (dialog.contains(document.activeElement)) return false;
-    petApp.classList.remove("dialog-visible");
-    petApp.classList.remove("composer-visible");
-    void bridge.setPetInteraction(false);
+  function showHoverDialog(): void {
+    const presentation = dockState.presentation() === "expanded" ? "expanded" : "caption";
+    showDialog(false, undefined, presentation);
+  }
+
+  function hideDialog(reason: DialogueDismissReason = "auto"): boolean {
+    dockState.setFocusWithin(dialog.contains(document.activeElement));
+    if (!dockState.requestHide(reason)) return false;
+    renderDockPresentation();
     return true;
   }
 
@@ -132,8 +193,15 @@ async function initializePet(): Promise<void> {
     if (pointerDown) return;
     if (hideTimer) window.clearTimeout(hideTimer);
     hideTimer = window.setTimeout(() => {
-      if (hideDialog()) setClickThrough(true);
-    }, 850);
+      if (hideDialog("auto")) setClickThrough(true);
+    }, 1100);
+  }
+
+  function dismissConversation(): void {
+    if (voiceActive) voice.stop();
+    if (dialog.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+    dockState.setFocusWithin(false);
+    if (hideDialog("escape")) setClickThrough(true);
   }
 
   function showToast(text: string): void {
@@ -160,8 +228,21 @@ async function initializePet(): Promise<void> {
       supported: voice.supported(),
       status: localSpeechStatus,
     });
-    micButton.disabled = state.disabled;
-    micButton.title = state.title;
+    micButton.disabled = busy || state.disabled;
+    const title = voiceActive ? "结束录音" : state.title;
+    micButton.title = title;
+    micButton.setAttribute("aria-label", title);
+    micButton.setAttribute("aria-pressed", String(voiceActive));
+  }
+
+  function resizeMessageInput(): void {
+    messageInput.style.height = "auto";
+    messageInput.style.height = `${Math.min(74, Math.max(30, messageInput.scrollHeight))}px`;
+  }
+
+  function updateComposerControls(): void {
+    sendButton.disabled = busy || messageInput.value.trim().length === 0;
+    updateMicControl();
   }
 
   function applyLocalSpeechStatus(status: LocalSpeechModelStatus): void {
@@ -171,10 +252,21 @@ async function initializePet(): Promise<void> {
   }
 
   function appendLine(role: "user" | "assistant", text: string): void {
-    const line = document.createElement("p");
-    line.className = role === "user" ? "user-line" : "assistant-line";
-    line.textContent = text;
-    dialogueLog.replaceChildren(line);
+    const turn = document.createElement("article");
+    turn.className = `dialogue-turn ${role === "user" ? "user-line" : "assistant-line"}`;
+    const meta = document.createElement("div");
+    const speaker = document.createElement("span");
+    speaker.textContent = role === "user" ? "你" : settingsState.settings.agentName;
+    const time = document.createElement("time");
+    time.dateTime = new Date().toISOString();
+    time.textContent = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+    meta.append(speaker, time);
+    const content = document.createElement("p");
+    content.textContent = text;
+    turn.append(meta, content);
+    dialogueLog.append(turn);
+    while (dialogueLog.childElementCount > 2) dialogueLog.firstElementChild?.remove();
+    if (role === "assistant") captionText.textContent = text;
     dialogueLog.scrollTop = dialogueLog.scrollHeight;
   }
 
@@ -270,9 +362,8 @@ async function initializePet(): Promise<void> {
     hitArea.setPointerCapture(event.pointerId);
     if (hideTimer) window.clearTimeout(hideTimer);
     if (dialog.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
-    petApp.classList.remove("dialog-visible");
-    petApp.classList.remove("composer-visible");
-    void bridge.setPetInteraction(false);
+    dockState.setFocusWithin(false);
+    hideDialog("drag");
     setClickThrough(false);
   }
 
@@ -315,7 +406,9 @@ async function initializePet(): Promise<void> {
     const previousVoice = settingsState.settings.voice;
     settingsState = state;
     must<HTMLElement>("#pet-agent-name").textContent = state.settings.agentName;
-    updateMicControl();
+    must<HTMLElement>("#pet-agent-avatar-text").textContent = state.settings.agentName.trim().slice(0, 1) || "忆";
+    hitArea.setAttribute("aria-label", `桌宠${state.settings.agentName}`);
+    updateComposerControls();
     if (
       !state.settings.voice.inputEnabled
       || previousVoice.recognitionMode !== state.settings.voice.recognitionMode
@@ -335,23 +428,46 @@ async function initializePet(): Promise<void> {
   function handleResponse(response: ChatResponse): void {
     appendLine("assistant", response.text);
     must<HTMLElement>("#pet-mode-badge").textContent = response.source === "provider" ? "模型在线" : "本地陪伴";
+    renderToolTraces(response.toolCalls ?? []);
     reactions.handleResponse(response);
     const hasComputerAction = renderComputerActions(response.computerActions ?? []);
+    setActivity(hasComputerAction ? "confirming" : "ready");
     uiLifecycle.presentResponse(() => {
       void model.speak(response.text);
       voice.speak(response.text);
-      showDialog(false, hasComputerAction ? undefined : 12_000, hasComputerAction ? "interactive" : "caption");
+      showDialog(false, hasComputerAction ? undefined : 12_000, hasComputerAction ? "expanded" : "caption");
       if (response.warning) showToast(response.warning);
     });
+  }
+
+  function renderToolTraces(traces: AgentToolTrace[]): void {
+    toolStrip.replaceChildren();
+    for (const trace of traces.slice(-4)) {
+      const chip = document.createElement("span");
+      chip.className = "agent-tool-chip";
+      chip.dataset.status = trace.status;
+      chip.textContent = trace.label;
+      chip.title = trace.summary;
+      toolStrip.append(chip);
+    }
+    toolStrip.hidden = toolStrip.childElementCount === 0;
   }
 
   function renderComputerActions(actions: ComputerActionProposal[]): boolean {
     const proposal = actions[0];
     if (!proposal) {
+      if (activeComputerProposal) return true;
       computerActionCard.hidden = true;
+      hasPendingComputerAction = false;
+      dockState.setPendingAction(false);
+      updateCaptionHint();
       return false;
     }
+    activeComputerProposal = proposal;
     computerActionCard.hidden = false;
+    hasPendingComputerAction = true;
+    dockState.setPendingAction(true);
+    updateCaptionHint();
     must<HTMLElement>("#computer-action-title").textContent = proposal.title;
     must<HTMLElement>("#computer-action-description").textContent = proposal.description;
     must<HTMLElement>("#computer-action-preview").textContent = proposal.preview;
@@ -371,16 +487,37 @@ async function initializePet(): Promise<void> {
       if (decision === "deny") button.classList.add("danger");
       button.addEventListener("click", async () => {
         buttons.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+        setActivity("working");
         try {
           const result = await bridge.executeComputerAction(proposal.id, decision);
           computerActionCard.hidden = true;
+          activeComputerProposal = undefined;
+          hasPendingComputerAction = false;
+          dockState.setPendingAction(false);
+          const pendingTrace = toolStrip.querySelector<HTMLElement>('[data-status="approval-required"]');
+          if (pendingTrace) {
+            pendingTrace.dataset.status = result.status === "completed" ? "completed" : "blocked";
+            pendingTrace.title = result.message;
+          }
           appendLine("assistant", result.message);
           showToast(result.message);
           if (result.status === "completed") setModelEmotion("happy");
+          setActivity("ready");
           showDialog(false, 6000, "caption");
         } catch (error) {
-          showToast(error instanceof Error ? error.message : "电脑操作失败");
-          buttons.querySelectorAll("button").forEach((item) => { item.disabled = false; });
+          const message = error instanceof Error ? error.message : "电脑操作失败";
+          showToast(message);
+          if (/过期/.test(message)) {
+            computerActionCard.hidden = true;
+            activeComputerProposal = undefined;
+            hasPendingComputerAction = false;
+            dockState.setPendingAction(false);
+            setActivity("ready");
+            showDialog(false, 6000, "caption");
+          } else {
+            setActivity("error");
+            buttons.querySelectorAll("button").forEach((item) => { item.disabled = false; });
+          }
         }
       });
       buttons.append(button);
@@ -392,23 +529,31 @@ async function initializePet(): Promise<void> {
     const text = (raw ?? messageInput.value).trim();
     if (!text || busy) return;
     busy = true;
-    sendButton.disabled = true;
-    messageInput.disabled = true;
+    dockState.setBusy(true);
     messageInput.value = "";
+    resizeMessageInput();
+    updateComposerControls();
     appendLine("user", text);
+    renderToolTraces([]);
+    setActivity("thinking");
+    showDialog(false, undefined, "expanded");
     setModelEmotion("thinking");
+    let failed = false;
     try {
       handleResponse(await bridge.chat(text));
     } catch (error) {
+      failed = true;
       const message = error instanceof Error ? error.message : "发送失败";
       appendLine("assistant", `刚才没有顺利处理：${message}`);
       showToast(message);
+      setActivity("error");
       setModelEmotion("idle");
     } finally {
       busy = false;
-      sendButton.disabled = false;
-      messageInput.disabled = false;
-      messageInput.focus();
+      dockState.setBusy(false);
+      if (!failed) setActivity(hasPendingComputerAction ? "confirming" : "ready");
+      updateComposerControls();
+      if (dockState.presentation() === "expanded") messageInput.focus();
     }
   }
 
@@ -417,20 +562,44 @@ async function initializePet(): Promise<void> {
     void sendMessage();
   });
   messageInput.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    messageInput.blur();
-    if (hideDialog()) setClickThrough(true);
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void sendMessage();
+    }
   });
+  messageInput.addEventListener("input", () => {
+    resizeMessageInput();
+    updateComposerControls();
+  });
+  captionSummary.addEventListener("click", () => showDialog(true, undefined, "expanded"));
+  closeDialogButton.addEventListener("click", dismissConversation);
   micButton.addEventListener("click", () => {
+    showDialog(true, undefined, "expanded");
     voice.start(
       (text) => void sendMessage(text),
       (text) => {
         messageInput.value = text;
+        resizeMessageInput();
+        updateComposerControls();
+        if (text.startsWith("正在本地识别")) setActivity("recognizing", text);
+        else if (text) setActivity("listening", "我听见了，继续说就好…");
       },
       (listening, error) => {
+        voiceActive = listening;
+        dockState.setVoiceActive(listening);
         micButton.classList.toggle("listening", listening);
         reactions.setVoiceActive(listening);
-        if (error) showToast(error);
+        if (listening) {
+          setActivity("listening");
+          showDialog(false, undefined, "expanded");
+        } else if (error) {
+          setActivity("error");
+          showToast(error);
+        } else if (!busy) {
+          setActivity(hasPendingComputerAction ? "confirming" : "ready");
+          scheduleHide();
+        }
+        updateComposerControls();
       },
     );
   });
@@ -444,12 +613,12 @@ async function initializePet(): Promise<void> {
     const target = event.target as Element | null;
     const interactive = Boolean(target?.closest("[data-interactive]"));
     setClickThrough(!interactive);
-    if (interactive) showDialog();
+    if (interactive) showHoverDialog();
     else scheduleHide();
   });
   petApp.addEventListener("pointerleave", scheduleHide);
-  dialog.addEventListener("pointerenter", () => showDialog());
-  hitArea.addEventListener("pointerenter", () => showDialog());
+  dialog.addEventListener("pointerenter", showHoverDialog);
+  hitArea.addEventListener("pointerenter", () => showDialog(false, undefined, "caption"));
   hitArea.addEventListener("pointerdown", beginPointerDrag);
   hitArea.addEventListener("pointermove", updatePointerDrag);
   hitArea.addEventListener("pointerup", finishPointerDrag);
@@ -458,16 +627,27 @@ async function initializePet(): Promise<void> {
     if (suppressClick) return;
     showDialog(true);
   });
-  dialog.addEventListener("focusin", () => showDialog());
-  dialog.addEventListener("focusout", () => window.setTimeout(scheduleHide, 0));
+  dialog.addEventListener("focusin", () => {
+    dockState.setFocusWithin(true);
+    showDialog(false, undefined, "expanded");
+  });
+  dialog.addEventListener("focusout", () => window.setTimeout(() => {
+    dockState.setFocusWithin(dialog.contains(document.activeElement));
+    scheduleHide();
+  }, 0));
   window.addEventListener("blur", () => {
     if (pointerDown) return;
     if (hideTimer) window.clearTimeout(hideTimer);
-    petApp.classList.remove("dialog-visible");
-    petApp.classList.remove("composer-visible");
-    void bridge.setPetInteraction(false);
+    dockState.setFocusWithin(false);
+    hideDialog("blur");
     setClickThrough(true);
   });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || dockState.presentation() === "hidden") return;
+    event.preventDefault();
+    event.stopPropagation();
+    dismissConversation();
+  }, true);
   window.addEventListener("resize", () => model.resize(mount.clientWidth, mount.clientHeight));
 
   bridge.onPetMotion(setModelMotion);
@@ -491,6 +671,9 @@ async function initializePet(): Promise<void> {
     must<HTMLElement>("#pet-mode-badge").textContent = state.providerMode === "provider" ? "模型在线" : "本地陪伴";
     dialogueLog.replaceChildren();
     appendLine("assistant", `嗨，${state.settings.settings.userName}。鼠标靠近我就能聊天，右键可以打开全部设置。`);
+    setActivity("ready");
+    resizeMessageInput();
+    updateComposerControls();
     const statusRevision = localSpeechStatusRevision;
     const initialLocalStatus = await bridge.getLocalSpeechStatus();
     if (localSpeechStatusRevision === statusRevision) applyLocalSpeechStatus(initialLocalStatus);
@@ -498,6 +681,7 @@ async function initializePet(): Promise<void> {
     setClickThrough(true);
   } catch (error) {
     appendLine("assistant", `初始化失败：${error instanceof Error ? error.message : "未知错误"}`);
+    setActivity("error");
     showDialog(false, 10_000, "caption");
   }
 }
@@ -623,6 +807,68 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
       row.append(header, track, evidence);
       list.append(row);
     }
+  }
+
+  function renderRelationship(profile: RelationshipProfile): void {
+    const stageLabels: Record<RelationshipProfile["stage"], string> = {
+      new: "初识",
+      acquainted: "渐熟",
+      familiar: "默契形成",
+      companion: "长期相伴",
+    };
+    const kindLabels: Record<RelationshipInsightKind, string> = {
+      identity: "关于你",
+      preference: "偏好",
+      goal: "目标",
+      routine: "习惯",
+      interest: "兴趣",
+      concern: "在意的事",
+      "work-style": "做事方式",
+      "support-style": "关心方式",
+    };
+    must<HTMLElement>("#relationship-stage").textContent = stageLabels[profile.stage];
+    must<HTMLElement>("#relationship-interactions").textContent = `${profile.interactionCount} 次互动`;
+    must<HTMLElement>("#relationship-summary").textContent = profile.summary;
+    const list = must<HTMLElement>("#relationship-insights");
+    list.replaceChildren();
+    const insights = profile.insights
+      .filter((item) => item.confidence >= 0.5 || item.evidenceCount >= 2)
+      .slice(0, 6);
+    const activities = profile.activityPatterns.filter((item) => item.observations >= 3).slice(0, 4);
+    if (!insights.length && !activities.length) {
+      const empty = document.createElement("div");
+      empty.className = "personality-empty";
+      empty.textContent = "还没有足够稳定的用户理解；她会继续听，而不是先猜。";
+      list.append(empty);
+    }
+    for (const insight of insights) {
+      const item = document.createElement("article");
+      item.className = "relationship-insight";
+      const header = document.createElement("header");
+      const kind = document.createElement("strong");
+      kind.textContent = kindLabels[insight.kind];
+      const confidence = document.createElement("span");
+      confidence.textContent = `置信 ${Math.round(insight.confidence * 100)}% · ${insight.evidenceCount} 次证据`;
+      header.append(kind, confidence);
+      const summary = document.createElement("p");
+      summary.textContent = insight.summary;
+      item.append(header, summary);
+      list.append(item);
+    }
+    if (activities.length) {
+      const activity = document.createElement("div");
+      activity.className = "relationship-activity";
+      const label = document.createElement("strong");
+      label.textContent = "本机观察到的常见桌面活动";
+      const values = document.createElement("span");
+      values.textContent = activities.map((item) => `${item.label} ×${item.observations}`).join(" · ");
+      activity.append(label, values);
+      list.append(activity);
+    }
+    const care = document.createElement("small");
+    care.className = "relationship-care";
+    care.textContent = `关心节奏：主动 ${Math.round(profile.careStyle.initiativeAffinity * 100)} · 实际帮忙 ${Math.round(profile.careStyle.practicalHelpAffinity * 100)} · 安静陪伴 ${Math.round(profile.careStyle.quietCompanionshipAffinity * 100)}`;
+    list.append(care);
   }
 
   function renderModelState(state: PublicModelState): void {
@@ -923,6 +1169,8 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     input("#setting-cooldown").value = String(value.heartbeat.proactiveCooldownMinutes);
     input("#setting-daily-limit").value = String(value.heartbeat.proactiveDailyLimit);
     input("#setting-quiet-hours").value = `${value.heartbeat.quietHoursStart}-${value.heartbeat.quietHoursEnd}`;
+    input("#setting-screen-awareness").checked = value.awareness.screenCaptureEnabled;
+    input("#setting-process-awareness").checked = value.awareness.processDetectionEnabled;
     input("#setting-voice-input").checked = value.voice.inputEnabled;
     input("#setting-voice-output").checked = value.voice.outputEnabled;
     input("#setting-language").value = value.voice.language;
@@ -986,6 +1234,10 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
         proactiveDailyLimit: numberFrom("#setting-daily-limit", current.heartbeat.proactiveDailyLimit),
         quietHoursStart: quietMatch ? Number(quietMatch[1]) : current.heartbeat.quietHoursStart,
         quietHoursEnd: quietMatch ? Number(quietMatch[2]) : current.heartbeat.quietHoursEnd,
+      },
+      awareness: {
+        screenCaptureEnabled: input("#setting-screen-awareness").checked,
+        processDetectionEnabled: input("#setting-process-awareness").checked,
       },
       voice: {
         inputEnabled: input("#setting-voice-input").checked,
@@ -1070,6 +1322,15 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
       showToast(error instanceof Error ? error.message : "人格重置失败");
     }
   });
+  must<HTMLButtonElement>("#relationship-reset-button").addEventListener("click", async () => {
+    if (!window.confirm("确定清空桌宠对你的稳定理解、活动习惯和主动话题反馈吗？三级记忆与桌宠人格不会被删除。")) return;
+    try {
+      renderRelationship(await bridge.resetRelationship());
+      showToast("关系档案已清空，她会从之后的互动重新认识你");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "关系档案重置失败");
+    }
+  });
   must<HTMLButtonElement>("#model-import-button").addEventListener("click", async () => {
     const button = must<HTMLButtonElement>("#model-import-button");
     button.disabled = true;
@@ -1107,7 +1368,11 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
       const result = await bridge.runHeartbeat();
       renderSnapshot(result.snapshot);
       renderPersonality(result.personality);
-      showToast(`心跳完成：L2 +${result.event.movedToL2}，L3 +${result.event.consolidatedToL3}，人格证据 +${result.event.personalityUpdates ?? 0}`);
+      renderRelationship(result.relationship);
+      const decision = result.event.proactiveMessage
+        ? "已主动开口"
+        : `保持安静：${result.event.skippedProactiveReason ?? "暂无合适话题"}`;
+      showToast(`心跳完成：L2 +${result.event.movedToL2}，L3 +${result.event.consolidatedToL3}，人格 +${result.event.personalityUpdates ?? 0}，关系 +${result.event.relationshipUpdates ?? 0}；${decision}`, 5600);
     } catch (error) {
       showToast(error instanceof Error ? error.message : "心跳执行失败");
     }
@@ -1145,7 +1410,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     try {
       populateSettings(await bridge.saveSettings(collectSettings()));
       await refreshComputerState();
-      showToast("设置已保存，电脑权限、人格、TTS、漫游和心跳策略已更新");
+      showToast("设置已保存，桌面感知、关系、电脑权限、TTS、漫游和心跳策略已更新");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "设置保存失败", 5000);
     } finally {
@@ -1161,6 +1426,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
   bridge.onLocalSpeechStatusChanged(renderLocalSpeechStatus);
   bridge.onModelChanged(renderModelState);
   bridge.onPersonalityChanged(renderPersonality);
+  bridge.onRelationshipChanged(renderRelationship);
   try {
     const state = await bridge.bootstrap();
     populateSettings(state.settings);
@@ -1169,6 +1435,7 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     const initialLocalStatus = await bridge.getLocalSpeechStatus();
     if (localSpeechStatusRevision === statusRevision) renderLocalSpeechStatus(initialLocalStatus);
     renderPersonality(state.personality);
+    renderRelationship(state.relationship);
     renderModelState(await bridge.getModelState());
     renderCounts(state.memory);
     openView(initialView);

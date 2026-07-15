@@ -27,6 +27,10 @@ export const DEFAULT_SETTINGS: AgentSettings = {
     quietHoursStart: 23,
     quietHoursEnd: 8,
   },
+  awareness: {
+    screenCaptureEnabled: false,
+    processDetectionEnabled: false,
+  },
   voice: {
     inputEnabled: true,
     outputEnabled: true,

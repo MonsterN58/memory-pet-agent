@@ -22,6 +22,7 @@ import type {
   PetMotionFrame,
   PetUiCommand,
   PersonalityProfile,
+  RelationshipProfile,
   PublicSettingsState,
   PublicModelState,
   SettingsUpdate,
@@ -40,6 +41,8 @@ const bridge: PetAgentBridge = {
     ipcRenderer.invoke("memory:delete", input) as Promise<MemorySnapshot>,
   getPersonality: () => ipcRenderer.invoke("personality:get") as Promise<PersonalityProfile>,
   resetPersonality: () => ipcRenderer.invoke("personality:reset") as Promise<PersonalityProfile>,
+  getRelationship: () => ipcRenderer.invoke("relationship:get") as Promise<RelationshipProfile>,
+  resetRelationship: () => ipcRenderer.invoke("relationship:reset") as Promise<RelationshipProfile>,
   runHeartbeat: () => ipcRenderer.invoke("heartbeat:run") as Promise<HeartbeatResult>,
   saveSettings: (update: SettingsUpdate) =>
     ipcRenderer.invoke("settings:save", update) as Promise<PublicSettingsState>,
@@ -118,6 +121,11 @@ const bridge: PetAgentBridge = {
     const callback = (_event: Electron.IpcRendererEvent, profile: PersonalityProfile) => listener(profile);
     ipcRenderer.on("personality:changed", callback);
     return () => ipcRenderer.removeListener("personality:changed", callback);
+  },
+  onRelationshipChanged: (listener: (profile: RelationshipProfile) => void) => {
+    const callback = (_event: Electron.IpcRendererEvent, profile: RelationshipProfile) => listener(profile);
+    ipcRenderer.on("relationship:changed", callback);
+    return () => ipcRenderer.removeListener("relationship:changed", callback);
   },
 };
 

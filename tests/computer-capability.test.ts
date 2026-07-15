@@ -118,6 +118,46 @@ test("禁止策略和关闭总开关会在执行前拦截", async (context) => {
   assert.equal(denied.proposal, undefined);
 });
 
+test("模型工具草稿在主进程再次清洗 URL、文本长度和建议文件名", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "memory-pet-computer-tool-draft-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const settings: AgentSettings = structuredClone(DEFAULT_SETTINGS);
+  settings.computer.enabled = true;
+  let savedName = "";
+  let savedText = "";
+  const controller = new ComputerCapabilityController(directory, {
+    getSettings: () => structuredClone(settings),
+    openUrl: async () => {},
+    copyText: () => {},
+    saveText: async (name, text) => {
+      savedName = name;
+      savedText = text;
+      return { cancelled: false, path: "D:\\result.txt" };
+    },
+    launchApp: async () => {},
+    persistPermission: async () => {},
+  });
+  await controller.initialize();
+
+  await assert.rejects(() => controller.planDraft({
+    tool: "open-url",
+    url: "file:///C:/secret.txt",
+    label: "本地文件",
+  }), /http\(s\)/);
+
+  const planned = await controller.planDraft({
+    tool: "save-text-file",
+    text: `  ${"内容".repeat(2000)}  `,
+    suggestedName: "..\\..\\危险:name?.md",
+  });
+  assert.ok(planned.proposal);
+  const result = await controller.execute(planned.proposal.id, "allow-once");
+  assert.equal(result.status, "completed");
+  assert.equal(savedText.length, 3000);
+  assert.equal(savedName.includes("\\"), false);
+  assert.equal(savedName.includes(":"), false);
+});
+
 test("操作完成后长期权限保存失败不会把已执行动作误记为失败", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "memory-pet-computer-permission-test-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

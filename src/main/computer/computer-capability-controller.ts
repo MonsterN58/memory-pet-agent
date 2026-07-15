@@ -119,6 +119,11 @@ export class ComputerCapabilityController {
   async planFromChat(input: string): Promise<ComputerPlanOutcome> {
     const draft = planComputerAction(input);
     if (!draft) return {};
+    return this.planDraft(draft);
+  }
+
+  async planDraft(value: ComputerActionDraft): Promise<ComputerPlanOutcome> {
+    const draft = sanitizeDraft(value);
     const settings = this.dependencies.getSettings().computer;
     if (!settings.enabled) {
       return { warning: "电脑协作尚未启用，可在设置中开启后再让我执行。" };
@@ -284,6 +289,61 @@ export class ComputerCapabilityController {
     };
     this.persistQueue = this.persistQueue.then(operation, operation);
     return this.persistQueue;
+  }
+}
+
+function sanitizeDraft(value: ComputerActionDraft): ComputerActionDraft {
+  if (!value || typeof value !== "object" || typeof value.tool !== "string") {
+    throw new Error("电脑工具参数格式无效");
+  }
+  switch (value.tool) {
+    case "open-url": {
+      const url = typeof value.url === "string" ? safeDraftUrl(value.url) : undefined;
+      if (!url) throw new Error("只能打开有效的 http(s) 网页地址");
+      const label = typeof value.label === "string" && value.label.trim()
+        ? trimPreview(value.label, 100)
+        : new URL(url).hostname;
+      return { tool: "open-url", url, label };
+    }
+    case "copy-text": {
+      const text = typeof value.text === "string" ? value.text.trim().slice(0, 3000) : "";
+      if (!text) throw new Error("写入剪贴板的文本为空");
+      return { tool: "copy-text", text };
+    }
+    case "save-text-file": {
+      const text = typeof value.text === "string" ? value.text.trim().slice(0, 3000) : "";
+      if (!text) throw new Error("保存文本为空");
+      const rawName = typeof value.suggestedName === "string" ? value.suggestedName : "桌宠记录.txt";
+      const suggestedName = rawName
+        .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "-")
+        .replace(/^\.+/, "")
+        .trim()
+        .slice(0, 100) || "桌宠记录.txt";
+      return { tool: "save-text-file", text, suggestedName };
+    }
+    case "launch-app": {
+      if (!new Set<AllowedDesktopApp>(["notepad", "calculator", "file-explorer"]).has(value.app)) {
+        throw new Error("应用不在桌宠白名单中");
+      }
+      const label = { notepad: "记事本", calculator: "计算器", "file-explorer": "资源管理器" }[value.app];
+      return { tool: "launch-app", app: value.app, label };
+    }
+    default: {
+      const exhaustive: never = value;
+      throw new Error(`未知电脑工具：${String((exhaustive as { tool?: unknown }).tool)}`);
+    }
+  }
+}
+
+function safeDraftUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return undefined;
   }
 }
 

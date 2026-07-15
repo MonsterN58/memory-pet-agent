@@ -53,6 +53,7 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
   const provider = input.provider ?? DEFAULT_SETTINGS.provider;
   const personality = input.personality ?? DEFAULT_SETTINGS.personality;
   const heartbeat = input.heartbeat ?? DEFAULT_SETTINGS.heartbeat;
+  const awareness = input.awareness ?? DEFAULT_SETTINGS.awareness;
   const voice: NonNullable<SettingsInput["voice"]> = input.voice ?? DEFAULT_SETTINGS.voice;
   const computer = input.computer ?? DEFAULT_SETTINGS.computer;
   const computerPermissions = computer.permissions ?? DEFAULT_SETTINGS.computer.permissions;
@@ -109,6 +110,16 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
         numberValue(heartbeat.quietHoursStart, DEFAULT_SETTINGS.heartbeat.quietHoursStart, 0, 23),
       ),
       quietHoursEnd: Math.round(numberValue(heartbeat.quietHoursEnd, DEFAULT_SETTINGS.heartbeat.quietHoursEnd, 0, 23)),
+    },
+    awareness: {
+      screenCaptureEnabled: booleanValue(
+        awareness.screenCaptureEnabled,
+        DEFAULT_SETTINGS.awareness.screenCaptureEnabled,
+      ),
+      processDetectionEnabled: booleanValue(
+        awareness.processDetectionEnabled,
+        DEFAULT_SETTINGS.awareness.processDetectionEnabled,
+      ),
     },
     voice: {
       inputEnabled: booleanValue(voice.inputEnabled, DEFAULT_SETTINGS.voice.inputEnabled),
@@ -185,6 +196,7 @@ export class SettingsStore {
         personality: { ...DEFAULT_SETTINGS.personality, ...loaded.personality },
         provider: { ...DEFAULT_SETTINGS.provider, ...loaded.provider },
         heartbeat: { ...DEFAULT_SETTINGS.heartbeat, ...loaded.heartbeat },
+        awareness: { ...DEFAULT_SETTINGS.awareness, ...loaded.awareness },
         // 不预先注入新版 voice 默认值，确保 voiceName/rate 旧字段能被迁移。
         voice: loaded.voice ?? DEFAULT_SETTINGS.voice,
         computer: {
@@ -225,6 +237,7 @@ export class SettingsStore {
       personality: { ...this.settings.personality, ...(update.personality ?? {}) },
       provider: { ...this.settings.provider, ...(update.provider ?? {}) },
       heartbeat: { ...this.settings.heartbeat, ...(update.heartbeat ?? {}) },
+      awareness: { ...this.settings.awareness, ...(update.awareness ?? {}) },
       voice: { ...this.settings.voice, ...(update.voice ?? {}) },
       computer: {
         ...this.settings.computer,

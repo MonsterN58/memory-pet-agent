@@ -4,6 +4,7 @@ export interface PetReactionInput {
   replyId: string;
   emotion: PetEmotion;
   replyText: string;
+  requestedAction?: PetAction;
   voiceActive: boolean;
   motion: PetLocomotion;
 }
@@ -44,7 +45,7 @@ export class PetReactionCoordinator {
     private readonly effects: PetReactionEffects,
   ) {}
 
-  handleResponse(response: Pick<ChatResponse, "emotion" | "text">): void {
+  handleResponse(response: Pick<ChatResponse, "emotion" | "text" | "requestedAction">): void {
     this.currentEmotion = response.emotion;
     this.effects.setEmotion(response.emotion);
     if (this.voiceActive) this.deferredVoiceEmotion = response.emotion;
@@ -52,6 +53,7 @@ export class PetReactionCoordinator {
       replyId: String(++this.replySequence),
       emotion: response.emotion,
       replyText: response.text,
+      requestedAction: response.requestedAction,
       voiceActive: this.voiceActive,
       motion: this.motion,
     }));
@@ -113,7 +115,7 @@ export class PetReactionDirector {
       this.pending = undefined;
       return undefined;
     }
-    const action = this.selectAction(input.emotion, input.replyText);
+    const action = input.requestedAction ?? this.selectAction(input.emotion, input.replyText);
     if (this.isBlocked(input)) {
       this.pending = action;
       return undefined;
