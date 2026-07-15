@@ -67,6 +67,11 @@ const bridge: PetAgentBridge = {
     ipcRenderer.on("settings:changed", callback);
     return () => ipcRenderer.removeListener("settings:changed", callback);
   },
+  onLocalSpeechStatusChanged: (listener: (status: LocalSpeechModelStatus) => void) => {
+    const callback = (_event: Electron.IpcRendererEvent, status: LocalSpeechModelStatus) => listener(status);
+    ipcRenderer.on("voice:local-status-changed", callback);
+    return () => ipcRenderer.removeListener("voice:local-status-changed", callback);
+  },
   onPetMotion: (listener: (frame: PetMotionFrame) => void) => {
     const callback = (_event: Electron.IpcRendererEvent, frame: PetMotionFrame) => listener(frame);
     ipcRenderer.on("pet:motion", callback);

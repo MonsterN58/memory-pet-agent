@@ -7,6 +7,7 @@ import type {
   LocalSpeechAudio,
   LocalSpeechModelStatus,
   LocalSpeechRecognitionResult,
+  LocalSpeechRuntimeState,
 } from "../common/types";
 
 export const LOCAL_ASR_MODEL_ID = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23";
@@ -20,6 +21,7 @@ const REQUIRED_FILES = [
 ] as const;
 const MAX_AUDIO_BYTES = 16_000 * 2 * 30;
 const MIN_AUDIO_BYTES = 16_000 * 2 / 4;
+type LocalSpeechModelFileStatus = Omit<LocalSpeechModelStatus, "runtimeState" | "runtimeMessage">;
 
 interface PendingRequest {
   resolve: (value: LocalSpeechRecognitionResult) => void;
@@ -46,6 +48,7 @@ export interface LocalAsrServiceOptions {
   initializationTimeoutMs?: number;
   recognitionTimeoutMs?: number;
   timers?: LocalAsrTimerFacade;
+  onStatusChanged?: (status: LocalSpeechModelStatus) => void;
 }
 
 export interface LocalAsrTimerFacade {
@@ -59,19 +62,23 @@ export class LocalAsrService {
   private readyResolve?: () => void;
   private readyReject?: (error: Error) => void;
   private initializationTimeout?: unknown;
-  private readyStatus?: LocalSpeechModelStatus;
+  private fileStatus?: LocalSpeechModelFileStatus;
+  private runtimeState: LocalSpeechRuntimeState = "not-started";
+  private runtimeMessage = "本地识别运行时尚未启动";
   private nextRequestId = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly createWorker: (filename: string) => LocalAsrWorker;
   private readonly initializationTimeoutMs: number;
   private readonly recognitionTimeoutMs: number;
   private readonly timers: LocalAsrTimerFacade;
+  private readonly onStatusChanged?: (status: LocalSpeechModelStatus) => void;
   private closed = false;
 
   constructor(readonly modelDirectory: string, options: LocalAsrServiceOptions = {}) {
     this.createWorker = options.createWorker ?? ((filename) => new Worker(filename) as LocalAsrWorker);
     this.initializationTimeoutMs = options.initializationTimeoutMs ?? 30_000;
     this.recognitionTimeoutMs = options.recognitionTimeoutMs ?? 30_000;
+    this.onStatusChanged = options.onStatusChanged;
     this.timers = options.timers ?? {
       setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
@@ -79,7 +86,13 @@ export class LocalAsrService {
   }
 
   async status(): Promise<LocalSpeechModelStatus> {
-    if (this.readyStatus) return this.readyStatus;
+    const fileStatus = await this.readModelFileStatus();
+    this.fileStatus = fileStatus;
+    return this.withRuntimeStatus(fileStatus);
+  }
+
+  protected async readModelFileStatus(): Promise<LocalSpeechModelFileStatus> {
+    if (this.fileStatus?.state === "ready") return this.fileStatus;
     const sizes = await Promise.all(REQUIRED_FILES.map(([name]) => fileSize(join(this.modelDirectory, name))));
     const installedSize = sizes.reduce<number>((total, size) => total + (size ?? 0), 0);
     if (sizes.some((size) => size === undefined)) {
@@ -110,14 +123,13 @@ export class LocalAsrService {
         message: "本地识别模型 SHA-256 校验失败，请运行 npm run voice:model:download 修复",
       };
     }
-    this.readyStatus = {
+    return {
       state: "ready",
       modelId: LOCAL_ASR_MODEL_ID,
       directory: this.modelDirectory,
       sizeBytes: installedSize,
       message: "小型中文 Zipformer 离线识别模型已就绪，录音只在本机处理",
     };
-    return this.readyStatus;
   }
 
   async recognize(value: unknown): Promise<LocalSpeechRecognitionResult> {
@@ -144,7 +156,9 @@ export class LocalAsrService {
   }
 
   async cancelCurrent(): Promise<void> {
+    const hadWorker = Boolean(this.worker || this.workerReady);
     const worker = this.invalidateWorker(new Error(LOCAL_ASR_CANCELLED_MESSAGE));
+    if (hadWorker) this.setRuntimeState("not-started", "本地识别运行时已停止，点击麦克风将重新加载");
     if (worker) await worker.terminate().catch(() => 0);
   }
 
@@ -182,7 +196,15 @@ export class LocalAsrService {
   private ensureWorker(): Promise<void> {
     this.assertOpen();
     if (this.workerReady) return this.workerReady;
-    const worker = this.createWorker(join(__dirname, "local-asr-worker.js"));
+    this.setRuntimeState("warming", "正在后台加载本地识别模型…");
+    let worker: LocalAsrWorker;
+    try {
+      worker = this.createWorker(join(__dirname, "local-asr-worker.js"));
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error("无法创建本地识别 worker");
+      this.setRuntimeState("failed", this.runtimeFailureMessage(failure));
+      throw failure;
+    }
     this.worker = worker;
     worker.on("message", (message: WorkerResponse) => this.handleWorkerMessage(worker, message));
     worker.on("error", (error) => {
@@ -218,6 +240,7 @@ export class LocalAsrService {
     if (message.type === "ready") {
       if (this.initializationTimeout !== undefined) this.timers.clearTimeout(this.initializationTimeout);
       this.initializationTimeout = undefined;
+      this.setRuntimeState("ready", "本地识别运行时已就绪");
       this.readyResolve?.();
       this.readyResolve = undefined;
       this.readyReject = undefined;
@@ -262,7 +285,32 @@ export class LocalAsrService {
 
   private resetWorker(error: Error): void {
     const worker = this.invalidateWorker(error);
+    this.setRuntimeState("failed", this.runtimeFailureMessage(error));
     if (worker) void worker.terminate().catch(() => 0);
+  }
+
+  private setRuntimeState(state: LocalSpeechRuntimeState, message: string): void {
+    if (this.runtimeState === state && this.runtimeMessage === message) return;
+    this.runtimeState = state;
+    this.runtimeMessage = message;
+    if (!this.fileStatus || !this.onStatusChanged) return;
+    try {
+      this.onStatusChanged(this.withRuntimeStatus(this.fileStatus));
+    } catch {
+      // Status observers must never break recognition or worker recovery.
+    }
+  }
+
+  private withRuntimeStatus(fileStatus: LocalSpeechModelFileStatus): LocalSpeechModelStatus {
+    return {
+      ...fileStatus,
+      runtimeState: this.runtimeState,
+      runtimeMessage: this.runtimeMessage,
+    };
+  }
+
+  private runtimeFailureMessage(error: Error): string {
+    return `本地识别运行时暂时异常：${error.message}；点击麦克风将重试`;
   }
 
   private assertOpen(): void {

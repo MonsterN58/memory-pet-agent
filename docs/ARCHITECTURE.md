@@ -48,8 +48,8 @@ flowchart LR
 - `PersonalityStore`：独立持久化人格状态和已复盘 L2 ID；使用临时文件替换，损坏时隔离并回到空白人格。
 - `ModelStore`：在主进程校验并复制用户选择的 Cubism `.model3.json` 资源，持久化当前模型，并向宠物窗口返回不含本地路径的受限资源包。
 - `OpenAICompatibleTtsClient`：可选云端模式的 `/audio/speech` 客户端；本机模式会在主进程边界直接拒绝云端生成，云端模式才读取独立 Base URL 和加密凭据。
-- `VoiceService`：用一个幂等 operation 贯穿麦克风启动、录音、VAD、16 kHz 下采样、识别、取消和 35 秒 Renderer 看门狗；同时负责兼容 Web Speech、云端 TTS、本机 `speechSynthesis` 回退、播放打断和过期结果丢弃。
-- `LocalAsrService / local-asr-worker`：主进程校验宠物窗口提交的音频边界，在独立 worker 中加载 sherpa-onnx 与项目内 14M 中文 Zipformer。启动后非阻塞预热；初始化和交互识别各有 30 秒上限，取消、超时、退出或提交失败统一 reject pending、终止 worker 并允许下一次重建。计时器可注入，关键恢复竞态使用假时钟测试。
+- `VoiceService`：用一个幂等 operation 贯穿麦克风启动、录音、VAD、16 kHz 下采样、识别、取消和 35 秒 Renderer 看门狗；启动/静默/最长录音还有独立墙钟看门狗，权限等待不侵占录音时限，30 秒 PCM 按采样数精确裁剪。
+- `LocalAsrService / local-asr-worker`：主进程分别公开模型文件状态与 `not-started / warming / ready / failed` 运行时状态，并推送到宠物窗口和控制面板。预热失败可见但不锁死重试；初始化和交互识别各有 30 秒上限，取消、超时、退出或提交失败统一收尾并允许下一次重建。
 - `live2d-interaction`：不依赖 DOM/Pixi 的真实参数能力绑定、焦点阻尼、拖拽/下落/落地变形、13 项动作映射、资源时长解析与程序化兜底。
 - `PetReactionDirector`：在 Renderer 内把回复情绪和文本映射为至多一个动作；处理强动作冷却、录音/拖拽优先级、最新待执行动作和手动预览优先级。
 - `Live2DPetAdapter`：使用 PixiJS 8、Cubism Framework 与官方 Core 5.1 渲染内置和用户导入模型，处理真实索引参数写入、motion、自动取景、口型、视线、物理、弹簧变形与模型资源释放。
@@ -175,7 +175,7 @@ sequenceDiagram
 
 `recognitionMode=local` 完全绕过 Chromium Web Speech，使用项目 `resources/voice/` 中经过固定 SHA-256 校验的 ONNX 模型；模型不打入安装包，可通过 `npm run voice:model:download` 按需下载。Electron 43 暴露的 `processLocally` 会因缺少 `media.mojom.OnDeviceSpeechRecognition` 服务终止渲染进程，因此代码中禁止本地模式调用该路径。`browser` 兼容模式可能联网。
 
-本地 operation 在调用 `getUserMedia()` 前创建，阶段为 `starting → recording → recognizing → cancelling/idle`。轨道、AudioContext、节点、回调、请求号、每秒状态计时器和 35 秒看门狗都挂在同一 operation 上；成功、空结果、错误、取消、启动失败和超时统一经过幂等收尾，先清理状态再交付最终文本。主进程 worker 事件携带来源实例并忽略旧 worker 的迟到事件；任何请求超时都会重置整个 worker，而不是只删除一个 Promise。`npm run smoke:voice-ui` 使用虚拟麦克风验证成功、取消、迟到结果隔离、worker 重建和下一次恢复。
+本地 operation 在调用 `getUserMedia()` 前创建，阶段为 `starting → recording → recognizing → cancelling/idle`。轨道、AudioContext、节点、回调、请求号和看门狗统一幂等收尾；权限成功后才开始计算静默/最长录音，轨道断开立即结束。主进程 worker 事件携带来源实例并忽略旧 worker 的迟到事件；状态变化经只读 IPC 事件推送，Renderer 以事件版本保护初始查询不覆盖新状态。运行时 `failed` 不禁用麦克风，点击后进入新的 `warming`。隐藏窗口通过 `ui:command:suspend` 停止输入和朗读，并阻止迟到聊天结果重新发声。
 
 `ttsMode=local` 完全绕过 IPC 和外部端点；`cloud` 模式使用 `voice.ttsBaseUrl / ttsModel / ttsVoice / ttsSpeed` 和独立 TTS API Key，任一阶段失败都回退 `speechSynthesis`。聊天仍独立使用 `provider.baseUrl / model` 和聊天 API Key。渲染进程只获得两组凭据是否存在的布尔状态，不能读取明文 Key。每次新回复递增请求序号并停止当前音频，因此晚返回的旧请求会被忽略。
 

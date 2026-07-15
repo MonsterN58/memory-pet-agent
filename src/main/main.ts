@@ -15,6 +15,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   ControlPanelView,
+  LocalSpeechModelStatus,
   ModelImportResult,
   PetAction,
   PetFocus,
@@ -35,7 +36,7 @@ import { MemoryEngine } from "./memory/memory-engine";
 import { sanitizeMemoryTarget, sanitizeMemoryUpdate } from "./memory/memory-input";
 import { MemoryRepository } from "./memory/memory-repository";
 import { ModelStore } from "./model-store";
-import { hidePetWindow } from "./pet-window-lifecycle";
+import { hidePetWindow, sendToLiveWindow } from "./pet-window-lifecycle";
 import { OpenAICompatibleTtsClient } from "./provider/openai-compatible-tts";
 import { PersonalityEngine } from "./personality/personality-engine";
 import { PersonalityStore } from "./personality/personality-store";
@@ -364,8 +365,13 @@ function quitApplication(): void {
 }
 
 function broadcastSettings(state: Awaited<ReturnType<SettingsStore["getPublicState"]>>): void {
-  petWindow?.webContents.send("settings:changed", state);
-  controlPanelWindow?.webContents.send("settings:changed", state);
+  sendToLiveWindow(petWindow, "settings:changed", state);
+  sendToLiveWindow(controlPanelWindow, "settings:changed", state);
+}
+
+function broadcastLocalSpeechStatus(status: LocalSpeechModelStatus): void {
+  sendToLiveWindow(petWindow, "voice:local-status-changed", status);
+  sendToLiveWindow(controlPanelWindow, "voice:local-status-changed", status);
 }
 
 async function updateSettings(update: SettingsUpdate) {
@@ -391,14 +397,14 @@ function triggerPetAction(action: PetAction): void {
 }
 
 function broadcastModelState(state: PublicModelState): void {
-  petWindow?.webContents.send("model:changed", state);
-  controlPanelWindow?.webContents.send("model:changed", state);
+  sendToLiveWindow(petWindow, "model:changed", state);
+  sendToLiveWindow(controlPanelWindow, "model:changed", state);
   refreshTrayMenu();
 }
 
 function broadcastPersonality(profile: PersonalityProfile = personalityEngine.getProfile()): void {
-  petWindow?.webContents.send("personality:changed", profile);
-  controlPanelWindow?.webContents.send("personality:changed", profile);
+  sendToLiveWindow(petWindow, "personality:changed", profile);
+  sendToLiveWindow(controlPanelWindow, "personality:changed", profile);
 }
 
 async function importLive2DModel(owner?: BrowserWindow): Promise<ModelImportResult> {
@@ -583,7 +589,10 @@ async function initialize(): Promise<void> {
   settingsStore = new SettingsStore(dataDirectory);
   await settingsStore.initialize();
   ttsClient = new OpenAICompatibleTtsClient(() => settingsStore.get(), () => settingsStore.getTtsApiKey());
-  localAsrService = new LocalAsrService(join(app.getAppPath(), "resources", "voice", LOCAL_ASR_MODEL_ID));
+  localAsrService = new LocalAsrService(
+    join(app.getAppPath(), "resources", "voice", LOCAL_ASR_MODEL_ID),
+    { onStatusChanged: broadcastLocalSpeechStatus },
+  );
   if ((!smokeTest && !modelSwitchSmoke && !capturePetPath) || voiceUiSmoke) {
     void localAsrService.warmup().catch((error: unknown) => {
       console.warn("Local ASR warmup failed", error);

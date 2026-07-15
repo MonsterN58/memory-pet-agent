@@ -55,14 +55,14 @@
 | 主动聊天 | 已完成 MVP | 空闲阈值、冷却、安静时段、每日上限 | 情境评分、用户反馈学习 |
 | 人格成长 | 已完成基础版 | 初始空白、六维连续状态、逐轮本地证据、心跳模型/离线复盘、置信度与相反反馈、独立持久化、设置页展示与重置 | 更丰富的隐式反馈、人格版本历史、用户纠错单项证据 |
 | 大模型 | 已完成基础版 | OpenAI 兼容端点、超时、离线降级、记忆提示隔离 | 流式输出、多供应商适配、重试/限流 |
-| 语音 | 已完成稳定本地版 | sherpa-onnx 1.13.4 + 14M 中文 Zipformer、麦克风 PCM/VAD/16k 下采样、非阻塞 warmup、单一幂等 operation、识别中立即取消、30/35 秒超时、worker 重建、虚拟麦克风 UI smoke、默认本机朗读、可选独立云端 TTS 与本机回退 | 部分识别结果、本地神经 TTS、真实音频驱动口型时序 |
+| 语音 | 已完成稳定本地版 | sherpa-onnx 1.13.4 + 14M 中文 Zipformer、麦克风 PCM/VAD/16k 下采样、采集墙钟/精确 30 秒边界、非阻塞 warmup、文件/运行时状态分离与失败重试、识别中取消、隐藏收尾、worker 重建、虚拟麦克风 UI smoke、本机/云端 TTS | 部分识别结果、本地神经 TTS、真实音频驱动口型时序 |
 | 2D 模型 | Live2D 交互增强已完成 | Hiyori/Mao/Wanko、Cubism 3/4/5 model3 导入、原子热切换/失败回退、640×480 单一全局视线、标准/旧式真实参数绑定、轻微待机、连续弹簧拖拽/下落/落地、11 种情绪、13 项动作、真实 motion3 时长、导入模型程序化兜底、可见网格自动取景、口型/眨眼/物理 | 用户缩放、expression 选择、历史模型切换/删除 UI、导入模型语义 motion 绑定 UI |
-| 测试与安全 | 基础完成 | 91 个核心测试、20 例记忆质量 fixture、时态检索/词法边界与真实回答链回归、类型检查、Electron/本地语音/UI 语音/三模型热切换 smoke、CSP、IPC 白名单、记忆并发与过期整理隔离、人格成长、本地 ASR 假时钟生命周期、本地/云端 TTS 隔离、全局视线/连续运动/动作导演/手动优先级、模型资源边界、npm 0 漏洞 | 多次记忆变更压力评测、麦克风硬件 E2E、更多数据迁移测试、安装包测试 |
+| 测试与安全 | 基础完成 | 106 个核心测试、20 例记忆质量 fixture、时态检索/真实回答链、Electron/本地语音/UI 语音/三模型 smoke、IPC 白名单、ASR 生命周期/运行状态/采集边界、隐藏语音收尾、TTS 隔离、全局视线/连续运动/动作导演、模型资源边界、npm 0 漏洞 | 多次记忆变更压力评测、麦克风硬件 E2E、更多数据迁移测试、安装包测试 |
 
 最近一次已验证：
 
 - `npm run typecheck` 通过。
-- `npm test`：91/91 通过，包含三级记忆迁移、20 例偏好更新/事实冲突/跨天跟进/持久化提示注入/用户纠错质量 fixture、聊天当前/历史/比较视图与真实回答链、普通起止路线/正文历史词边界、旧值访问强化隔离、零相关召回、主动聊天通用类型召回、L2/L3 修正与删除、磁盘重载、并发写队列、心跳过期提炼隔离、修改输入边界、可解释检索评分、设置迁移、人格成长/修正/心跳去重、本地 ASR PCM 输入边界/模型缺失状态/16k 下采样、取消/迟到结果/30 与 35 秒假时钟恢复、Chromium 兼容模式隔离、本机 TTS 不访问云端、云端失败回退、聊天/TTS 端点隔离、TTS 鉴权/错误/12MB 上限、640×480 全局焦点、标准/旧式参数绑定、连续拖拽/下落/落地、13 项动作映射与兜底、情绪导演和手动动作优先级，以及 Live2D 资源与导入边界。
+- `npm test`：106/106 通过；新增覆盖 ASR 预热 `warming/ready/failed` 可见状态、失败重试、观察者隔离、模型缺失按钮门控、采集墙钟/轨道断开/30 秒精确裁剪、隐藏窗口语音收尾与迟到回复抑制，其余三级记忆、人格、TTS、Live2D 与模型资源回归继续通过。
 - `npm run test:memory-quality`：9/9 测试通过，覆盖 5 类、20 个 fixture 与真实 `AgentService.respond()`；使用临时本地 JSON 和仅监听 `127.0.0.1` 的受控兼容端点，不访问外部网络或模型。
 - `npm run build` 通过。
 - `npm run smoke` 在 Electron 43.1.0 下输出 `ELECTRON_SMOKE_TEST_READY`。
@@ -131,7 +131,8 @@ src/main/
   agent-service.ts         结构化人格上下文、聊天、主动消息、情绪推断、反思、L2 与人格证据提炼
   reaction-inference.ts    同时参考用户/回复文本的确定性情绪分类
   heartbeat-service.ts     心跳调度、主动聊天限制与审计
-  local-asr-service.ts     项目模型状态、PCM 边界、非阻塞预热、取消、可注入超时与 worker 重建
+  local-asr-service.ts     模型文件/运行时状态、PCM 边界、非阻塞预热、取消、可注入超时与 worker 重建
+  pet-window-lifecycle.ts  隐藏前通知 Renderer 停止语音并保证窗口收尾
   local-asr-worker.ts      sherpa-onnx Zipformer 加载和本机解码
   settings-store.ts        设置清洗、持久化、safeStorage API Key
   model-store.ts           内置/用户 Live2D model3 校验、引用收集、复制、状态持久化和受限资源包
@@ -151,6 +152,8 @@ src/renderer/
   index.html / styles.css  桌宠、聊天、记忆和设置 UI
   renderer.ts              UI 状态与 bridge 调用、记忆管理、语音/动作优先级和模型热切换
   voice-service.ts         单一语音 operation、PCM/VAD/下采样、取消/35s 看门狗、本机/云端 TTS
+  local-speech-status.ts   麦克风可用性与本地 ASR 状态文案纯逻辑
+  pet-ui-command.ts        界面暂停/恢复与隐藏后迟到回复抑制
   model-adapter.ts         2D 模型稳定接口
   live2d-interaction.ts    真实参数绑定、焦点阻尼、连续变形、动作映射/时长/程序化兜底
   pet-reaction-director.ts 回复动作选择、冷却、延后、情绪恢复和手动预览优先级

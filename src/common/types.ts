@@ -223,12 +223,16 @@ export interface LocalSpeechRecognitionResult {
   durationMs: number;
 }
 
+export type LocalSpeechRuntimeState = "not-started" | "warming" | "ready" | "failed";
+
 export interface LocalSpeechModelStatus {
   state: "ready" | "missing" | "invalid";
   modelId: string;
   directory: string;
   sizeBytes: number;
   message: string;
+  runtimeState: LocalSpeechRuntimeState;
+  runtimeMessage?: string;
 }
 
 export interface HeartbeatResult {
@@ -308,6 +312,7 @@ export interface PetAgentBridge {
   playPetAction(action: PetAction): Promise<void>;
   onProactiveMessage(listener: (message: ChatResponse) => void): () => void;
   onSettingsChanged(listener: (state: PublicSettingsState) => void): () => void;
+  onLocalSpeechStatusChanged(listener: (status: LocalSpeechModelStatus) => void): () => void;
   onPetMotion(listener: (frame: PetMotionFrame) => void): () => void;
   onPetFocus(listener: (focus: PetFocus) => void): () => void;
   onPetAction(listener: (action: PetAction) => void): () => void;

@@ -21,6 +21,7 @@ import type {
 import type { PetModelAdapter } from "./model-adapter";
 import { DefaultPetAdapter } from "./model-adapter";
 import { Live2DPetAdapter } from "./live2d-pet-adapter";
+import { localSpeechControlState, localSpeechStatusText } from "./local-speech-status";
 import { PetReactionCoordinator, PetReactionDirector } from "./pet-reaction-director";
 import { PetUiLifecycle } from "./pet-ui-command";
 import { VoiceService } from "./voice-service";
@@ -88,6 +89,8 @@ async function initializePet(): Promise<void> {
   let modelLoadPending = false;
   let modelLoadAnnounce = false;
   let modelSwitchTask: Promise<void> | undefined;
+  let localSpeechStatus: LocalSpeechModelStatus | undefined;
+  let localSpeechStatusRevision = 0;
 
   function setClickThrough(ignore: boolean): void {
     if (ignore === clickThrough) return;
@@ -145,6 +148,23 @@ async function initializePet(): Promise<void> {
     (audio) => bridge.recognizeLocalSpeech(audio),
     () => bridge.cancelLocalSpeechRecognition(),
   );
+
+  function updateMicControl(): void {
+    const state = localSpeechControlState({
+      inputEnabled: settingsState.settings.voice.inputEnabled,
+      recognitionMode: settingsState.settings.voice.recognitionMode,
+      supported: voice.supported(),
+      status: localSpeechStatus,
+    });
+    micButton.disabled = state.disabled;
+    micButton.title = state.title;
+  }
+
+  function applyLocalSpeechStatus(status: LocalSpeechModelStatus): void {
+    localSpeechStatusRevision += 1;
+    localSpeechStatus = status;
+    updateMicControl();
+  }
 
   function appendLine(role: "user" | "assistant", text: string): void {
     const line = document.createElement("p");
@@ -291,7 +311,7 @@ async function initializePet(): Promise<void> {
     const previousVoice = settingsState.settings.voice;
     settingsState = state;
     must<HTMLElement>("#pet-agent-name").textContent = state.settings.agentName;
-    micButton.disabled = !state.settings.voice.inputEnabled;
+    updateMicControl();
     if (
       !state.settings.voice.inputEnabled
       || previousVoice.recognitionMode !== state.settings.voice.recognitionMode
@@ -415,6 +435,7 @@ async function initializePet(): Promise<void> {
     handleResponse(response);
   });
   bridge.onSettingsChanged(applyPetSettings);
+  bridge.onLocalSpeechStatusChanged(applyLocalSpeechStatus);
 
   try {
     const state = await bridge.bootstrap();
@@ -422,12 +443,9 @@ async function initializePet(): Promise<void> {
     must<HTMLElement>("#pet-mode-badge").textContent = state.providerMode === "provider" ? "模型在线" : "本地陪伴";
     dialogueLog.replaceChildren();
     appendLine("assistant", `嗨，${state.settings.settings.userName}。鼠标靠近我就能聊天，右键可以打开全部设置。`);
-    if (!voice.supported()) micButton.title = "当前环境无法使用所选语音识别模式";
-    if (state.settings.settings.voice.recognitionMode === "local") {
-      const localStatus = await bridge.getLocalSpeechStatus();
-      micButton.title = localStatus.message;
-      if (localStatus.state !== "ready") micButton.disabled = true;
-    }
+    const statusRevision = localSpeechStatusRevision;
+    const initialLocalStatus = await bridge.getLocalSpeechStatus();
+    if (localSpeechStatusRevision === statusRevision) applyLocalSpeechStatus(initialLocalStatus);
     await loadConfiguredModel();
     setClickThrough(true);
   } catch (error) {
@@ -811,10 +829,13 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     input("#setting-always-on-top").checked = value.window.alwaysOnTop;
   }
 
+  let localSpeechStatusRevision = 0;
+
   function renderLocalSpeechStatus(status: LocalSpeechModelStatus): void {
+    localSpeechStatusRevision += 1;
     const element = must<HTMLElement>("#local-asr-state");
-    element.dataset.state = status.state;
-    element.textContent = status.message;
+    element.dataset.state = status.state === "ready" ? status.runtimeState : status.state;
+    element.textContent = localSpeechStatusText(status);
     element.title = status.directory;
   }
 
@@ -977,12 +998,15 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
 
   bridge.onPanelView(openView);
   bridge.onSettingsChanged(populateSettings);
+  bridge.onLocalSpeechStatusChanged(renderLocalSpeechStatus);
   bridge.onModelChanged(renderModelState);
   bridge.onPersonalityChanged(renderPersonality);
   try {
     const state = await bridge.bootstrap();
     populateSettings(state.settings);
-    renderLocalSpeechStatus(await bridge.getLocalSpeechStatus());
+    const statusRevision = localSpeechStatusRevision;
+    const initialLocalStatus = await bridge.getLocalSpeechStatus();
+    if (localSpeechStatusRevision === statusRevision) renderLocalSpeechStatus(initialLocalStatus);
     renderPersonality(state.personality);
     renderModelState(await bridge.getModelState());
     renderCounts(state.memory);

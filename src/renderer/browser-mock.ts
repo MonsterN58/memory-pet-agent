@@ -4,6 +4,7 @@ import type {
   ControlPanelView,
   Live2DModelAssetPackage,
   Live2DModelInfo,
+  LocalSpeechModelStatus,
   MemoryRecord,
   MemorySnapshot,
   PetAgentBridge,
@@ -55,6 +56,7 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
   let personalityProfile: PersonalityProfile = blankPersonalityProfile();
   const proactiveListeners = new Set<(message: ChatResponse) => void>();
   const settingsListeners = new Set<(state: PublicSettingsState) => void>();
+  const localSpeechStatusListeners = new Set<(status: LocalSpeechModelStatus) => void>();
   const motionListeners = new Set<(frame: PetMotionFrame) => void>();
   const focusListeners = new Set<(focus: PetFocus) => void>();
   const uiListeners = new Set<(command: PetUiCommand) => void>();
@@ -173,6 +175,8 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
         directory: "浏览器预览模式",
         sizeBytes: 0,
         message: "浏览器预览不运行本地 ASR，请在 Electron 中测试",
+        runtimeState: "not-started",
+        runtimeMessage: "浏览器预览未启动本地识别运行时",
       };
     },
     async recognizeLocalSpeech() {
@@ -232,6 +236,10 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
     async playPetAction(action) { actionListeners.forEach((listener) => listener(action)); },
     onProactiveMessage(listener) { proactiveListeners.add(listener); return () => proactiveListeners.delete(listener); },
     onSettingsChanged(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener); },
+    onLocalSpeechStatusChanged(listener) {
+      localSpeechStatusListeners.add(listener);
+      return () => localSpeechStatusListeners.delete(listener);
+    },
     onPetMotion(listener) { motionListeners.add(listener); return () => motionListeners.delete(listener); },
     onPetFocus(listener) { focusListeners.add(listener); return () => focusListeners.delete(listener); },
     onPetAction(listener) { actionListeners.add(listener); return () => actionListeners.delete(listener); },

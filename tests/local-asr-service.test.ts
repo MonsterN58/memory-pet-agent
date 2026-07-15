@@ -16,6 +16,7 @@ test("本地 ASR 清晰报告项目模型缺失", async (context) => {
   context.after(() => rm(directory, { recursive: true, force: true }));
   const status = await new LocalAsrService(directory).status();
   assert.equal(status.state, "missing");
+  assert.equal(status.runtimeState, "not-started");
   assert.equal(status.directory, directory);
   assert.match(status.message, /voice:model:download/);
 });
@@ -54,6 +55,71 @@ test("本地 ASR warmup 并发复用同一个 worker", async () => {
   await fixture.service.close();
 });
 
+test("本地 ASR 公开预热失败并允许下一次重试恢复", async () => {
+  const fixture = createServiceFixture();
+  const firstWarmup = fixture.service.warmup();
+  const firstWorker = await waitForWorker(fixture.workers, 0);
+  assert.equal((await fixture.service.status()).runtimeState, "warming");
+  firstWorker.emitMessage({ type: "failure", message: "fixture init failed" });
+  await assert.rejects(firstWarmup, /fixture init failed/);
+  const failed = await fixture.service.status();
+  assert.equal(failed.state, "ready");
+  assert.equal(failed.runtimeState, "failed");
+  assert.match(failed.runtimeMessage ?? "", /fixture init failed/);
+
+  const secondWarmup = fixture.service.warmup();
+  const secondWorker = await waitForWorker(fixture.workers, 1);
+  assert.equal((await fixture.service.status()).runtimeState, "warming");
+  secondWorker.emitMessage({ type: "ready" });
+  await secondWarmup;
+  assert.equal((await fixture.service.status()).runtimeState, "ready");
+  assert.deepEqual(
+    fixture.statusEvents.map((status) => status.runtimeState),
+    ["warming", "failed", "warming", "ready"],
+  );
+  await fixture.service.close();
+});
+
+test("本地 ASR worker 创建失败也会公开状态且可恢复", async () => {
+  const workers: FakeWorker[] = [];
+  let attempts = 0;
+  const service = new ReadyLocalAsrService("D:/fixture/model", {
+    createWorker: () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("fixture create failed");
+      const worker = new FakeWorker();
+      workers.push(worker);
+      return worker;
+    },
+  });
+
+  await assert.rejects(service.warmup(), /fixture create failed/);
+  assert.equal((await service.status()).runtimeState, "failed");
+  const recovered = service.warmup();
+  const worker = await waitForWorker(workers, 0);
+  worker.emitMessage({ type: "ready" });
+  await recovered;
+  assert.equal((await service.status()).runtimeState, "ready");
+  await service.close();
+});
+
+test("本地 ASR 状态观察者异常不会破坏 worker 生命周期", async () => {
+  const worker = new FakeWorker();
+  const service = new ReadyLocalAsrService("D:/fixture/model", {
+    createWorker: () => worker,
+    onStatusChanged: () => {
+      throw new Error("fixture observer failed");
+    },
+  });
+
+  const warmup = service.warmup();
+  await waitForRecognitionMessage(worker, "initialize");
+  worker.emitMessage({ type: "ready" });
+  await warmup;
+  assert.equal((await service.status()).runtimeState, "ready");
+  await service.close();
+});
+
 test("本地 ASR 取消会拒绝 pending、终止 worker 且下一次可恢复", async () => {
   const fixture = createServiceFixture();
   const firstWarmup = fixture.service.warmup();
@@ -66,6 +132,7 @@ test("本地 ASR 取消会拒绝 pending、终止 worker 且下一次可恢复",
   await fixture.service.cancelCurrent();
   await assert.rejects(firstRecognition, /已取消/);
   assert.equal(fixture.workers[0]?.terminateCalls, 1);
+  assert.equal((await fixture.service.status()).runtimeState, "not-started");
 
   const secondRecognition = fixture.service.recognize(validAudio());
   const secondWorker = await waitForWorker(fixture.workers, 1);
@@ -185,7 +252,13 @@ test("worker initialize postMessage 同步失败会让 warmup 明确失败", asy
 
 test("close 后不会让仍在等待 status 的 warmup 复活 worker", async () => {
   const workers: FakeWorker[] = [];
-  const status = deferred<Awaited<ReturnType<LocalAsrService["status"]>>>();
+  const status = deferred<{
+    state: "ready";
+    modelId: string;
+    directory: string;
+    sizeBytes: number;
+    message: string;
+  }>();
   const service = new DeferredStatusLocalAsrService("D:/fixture/model", status.promise, {
     createWorker: () => {
       const worker = new FakeWorker();
@@ -214,7 +287,7 @@ test("close 后不会让仍在等待 status 的 warmup 复活 worker", async () 
 });
 
 class ReadyLocalAsrService extends LocalAsrService {
-  override async status() {
+  protected override async readModelFileStatus() {
     return {
       state: "ready" as const,
       modelId: "test-model",
@@ -231,14 +304,20 @@ class DeferredStatusLocalAsrService extends LocalAsrService {
 
   constructor(
     modelDirectory: string,
-    private readonly statusResult: Promise<Awaited<ReturnType<LocalAsrService["status"]>>>,
+    private readonly statusResult: Promise<{
+      state: "ready";
+      modelId: string;
+      directory: string;
+      sizeBytes: number;
+      message: string;
+    }>,
     options: LocalAsrServiceOptions,
   ) {
     super(modelDirectory, options);
     this.statusStarted = new Promise<void>((resolve) => { this.markStatusStarted = resolve; });
   }
 
-  override async status() {
+  protected override async readModelFileStatus() {
     this.markStatusStarted();
     return this.statusResult;
   }
@@ -268,9 +347,11 @@ function createServiceFixture(overrides: Partial<LocalAsrServiceOptions> = {}): 
   service: ReadyLocalAsrService;
   workers: FakeWorker[];
   timers: ManualTimers;
+  statusEvents: Awaited<ReturnType<LocalAsrService["status"]>>[];
 } {
   const workers: FakeWorker[] = [];
   const timers = new ManualTimers();
+  const statusEvents: Awaited<ReturnType<LocalAsrService["status"]>>[] = [];
   const service = new ReadyLocalAsrService("D:/fixture/model", {
     createWorker: () => {
       const worker = new FakeWorker();
@@ -280,9 +361,10 @@ function createServiceFixture(overrides: Partial<LocalAsrServiceOptions> = {}): 
     initializationTimeoutMs: 500,
     recognitionTimeoutMs: 500,
     timers,
+    onStatusChanged: (status) => statusEvents.push(status),
     ...overrides,
   });
-  return { service, workers, timers };
+  return { service, workers, timers, statusEvents };
 }
 
 function validAudio() {
@@ -305,6 +387,14 @@ async function waitForWorker(workers: FakeWorker[], index: number): Promise<Fake
     await Promise.resolve();
   }
   throw new Error(`worker ${index} was not created`);
+}
+
+async function waitForRecognitionMessage(worker: FakeWorker, type: string): Promise<void> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (worker.messages.some((message) => message.type === type)) return;
+    await Promise.resolve();
+  }
+  throw new Error(`worker did not receive ${type} message`);
 }
 
 class ManualTimers implements LocalAsrTimerFacade {
