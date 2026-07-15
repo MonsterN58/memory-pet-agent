@@ -41,6 +41,7 @@ flowchart LR
 - `DesktopMovementController`：管理焦点/指针暂停原因，在显示器工作区内处理自主漫游、全局鼠标拖拽、重力下落、约 320ms 落地阶段，并每 33ms 发送连续 `PetMotionFrame` 与单一全局焦点。
 - `pet-motion`：不依赖 Electron 的焦点归一化、连续运动帧计算、数值边界和落地状态归约器。
 - `AgentService`：检索记忆、注入结构化人格状态、生成回复、主动开场、L2 提炼和模型人格证据提取；普通与主动回复都经本地纯函数 `inferReaction()` 生成情绪标签。
+- `companion-dialogue`：纯逻辑地判断倾诉/闲聊/信息/回忆等对话节奏，构建有限且连续的陪伴契约，恢复真实 L1 角色轮次，并提供不泄露技术模式的离线回复。
 - `HeartbeatService`：定时器、迁移/整理触发、主动聊天约束和心跳审计。
 - `MemoryEngine`：L1 缓冲、L2 事件化、L3 候选生成与上下文检索。
 - `MemoryRepository`：版本化存储、L2/L3 原位修正与删除、可解释完整检索、聊天时态视图检索、串行写入、临时文件替换和损坏文件隔离。
@@ -55,6 +56,8 @@ flowchart LR
 - `Live2DPetAdapter`：使用 PixiJS 8、Cubism Framework 与官方 Core 5.1 渲染内置和用户导入模型，处理真实索引参数写入、motion、自动取景、口型、视线、物理、弹簧变形与模型资源释放。
 - `DefaultPetAdapter`：Live2D 加载或 WebGL 初始化失败时使用的轻量程序化后备模型，保证聊天和桌面交互仍可用。
 - `PetModelAdapter`：模型渲染边界，使 Agent、桌面移动和具体 2D Runtime 彼此解耦。
+
+普通聊天先把当前用户消息写入 L1，再执行时态门控检索。最近 L1 会排除本轮消息后以真实 `user / assistant` 消息序列传入模型；L2/L3 只以不可执行的 JSON 背景数据进入系统上下文。陪伴契约要求模型先判断本轮是倾诉、分享、求知、回忆确认还是自我梳理，再决定回应节奏；记忆只有在确实改善理解时才自然带出，不用于展示内部机制。详细原则见 [`COMPANION_DIALOGUE.md`](./COMPANION_DIALOGUE.md)。
 
 ## 桌面交互与移动
 
