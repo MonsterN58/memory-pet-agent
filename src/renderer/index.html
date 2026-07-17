@@ -55,7 +55,7 @@
             <section id="computer-action-card" class="computer-action-card" aria-live="polite" hidden>
               <header>
                 <span class="computer-action-mark" aria-hidden="true">⌁</span>
-                <span><small>需要你确认</small><strong id="computer-action-title"></strong></span>
+                <span><small id="computer-action-step">需要你确认</small><strong id="computer-action-title"></strong></span>
               </header>
               <p id="computer-action-description"></p>
               <pre id="computer-action-preview"></pre>
@@ -205,16 +205,26 @@
                   <option value="ask">每次询问</option><option value="allow">始终允许</option><option value="deny">禁止</option>
                 </select>
               </label>
+              <label>控制当前浏览器标签页
+                <select id="setting-permission-browser-control">
+                  <option value="ask">每次询问</option><option value="deny">禁止</option>
+                </select>
+              </label>
+              <label>写入当前 Office 文档
+                <select id="setting-permission-office-write">
+                  <option value="ask">每次询问</option><option value="deny">禁止</option>
+                </select>
+              </label>
             </div>
             <div class="model-button-row computer-button-row">
               <button id="computer-open-extension" type="button" class="secondary-button">打开扩展目录</button>
               <button id="computer-copy-pairing" type="button" class="primary-button">复制配对信息</button>
               <button id="computer-rotate-pairing" type="button" class="secondary-button">重置配对令牌</button>
             </div>
-            <p class="model-import-note">Chrome / Edge 加载项目内 <code>browser-extension</code> 后，可在网页或选中文本上右键选择“解释、总结、记住、聊聊”。扩展只在你点击菜单时提交对应内容，不读取其他标签页；重置令牌会立即断开旧配对。</p>
+            <p class="model-import-note">Chrome / Edge 加载项目内 <code>browser-extension</code> 后，可在网页或选中文本上右键选择“解释、总结、记住、聊聊”；确认操作卡后，还可刷新、滚动或在当前活动标签页中查找文字。扩展不读取其他标签页；重置令牌会立即断开旧配对。</p>
             <div class="computer-audit-header"><span class="field-group-label">最近电脑协作审计</span><button id="computer-clear-audit" type="button" class="text-button">清空</button></div>
             <div id="computer-audit-list" class="computer-audit-list"><p>暂无电脑协作记录</p></div>
-            <p class="model-import-note">聊天中的“打开网页、搜索、复制、保存文件、启动记事本/计算器/资源管理器”会先形成固定参数的预览。保存文件始终保留原生路径选择确认；当前版本不向模型开放任意命令、任意文件系统或后台鼠标键盘控制。</p>
+            <p class="model-import-note">聊天中的网页、剪贴板、文件、白名单应用、当前标签页及 Office 写入都会先形成固定参数预览。Office 只操作已经打开的当前 Word 文档、Excel 工作表或 PowerPoint 演示文稿；保存文件仍会弹出原生路径选择。当前版本不向模型开放任意命令、宏、任意文件系统或后台通用鼠标键盘控制。</p>
           </fieldset>
 
           <fieldset>
@@ -249,7 +259,7 @@
             <legend>Live2D 模型与动作</legend>
             <div class="model-state-card">
               <span>当前模型</span>
-              <strong id="model-state-name">Hiyori（官方样例）</strong>
+              <strong id="model-state-name">Hiyori（Live2D 官方样例）</strong>
               <small id="model-state-details">正在读取模型状态…</small>
             </div>
             <label>内置模型<select id="model-bundled-select"></select></label>
@@ -257,7 +267,7 @@
               <button id="model-import-button" type="button" class="primary-button">导入 Live2D 文件夹</button>
               <button id="model-apply-button" type="button" class="secondary-button">切换内置模型</button>
             </div>
-            <p class="model-import-note">支持 Cubism 3/4/5 的 .model3.json + .moc3 模型，包含 motions、expressions、physics 和最多 8 张贴图，总计不超过 64MB。导入后资源会复制到本地数据目录。</p>
+            <p class="model-import-note">支持 Cubism 3/4/5 的 .model3.json + .moc3 模型，包含 motions、expressions、physics 和最多 8 张贴图，总计不超过 64MB。内置身体各有不同的低置信初始气质；真实互动形成的人格会逐维覆盖它，切换模型不会清空记忆、关系或已成长人格。导入后资源会复制到本地数据目录。</p>
             <span class="field-group-label">动作预览</span>
             <div class="pet-action-grid">
               <button type="button" data-pet-action="wave">👋 挥手</button>
@@ -273,6 +283,11 @@
               <button type="button" data-pet-action="comfort">☁ 安慰</button>
               <button type="button" data-pet-action="sleep">☾ 睡觉</button>
               <button type="button" data-pet-action="surprised">! 惊讶</button>
+              <button type="button" data-pet-action="bow">⌁ 鞠躬</button>
+              <button type="button" data-pet-action="applaud">👏 鼓掌</button>
+              <button type="button" data-pet-action="peek">◉ 探看</button>
+              <button type="button" data-pet-action="ponder">⋯ 沉思</button>
+              <button type="button" data-pet-action="present">➜ 展示</button>
             </div>
           </fieldset>
 

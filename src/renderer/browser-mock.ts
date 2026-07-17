@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS } from "../common/defaults";
+import { BUNDLED_MODEL_DEFINITIONS } from "../common/bundled-models";
 import type {
   ChatResponse,
   ComputerActionProposal,
@@ -21,23 +22,61 @@ import type {
   PublicSettingsState,
 } from "../common/types";
 
-const BUNDLED_MODELS: Array<Live2DModelInfo & { directory: string }> = [
-  {
-    id: "hiyori", name: "Hiyori（官方样例）", source: "bundled", directory: "Hiyori",
+type BrowserBundledModel = Live2DModelInfo & { directory: string; settingsFile: string };
+type BrowserModelMetadata = Pick<
+  Live2DModelInfo,
+  "settingsVersion" | "motionGroups" | "motionCount" | "expressionCount" | "lipSyncParameters" | "textureCount"
+>;
+
+const BUNDLED_MODEL_METADATA: Record<string, BrowserModelMetadata> = {
+  hiyori: {
     settingsVersion: 3, motionGroups: { Idle: 9, TapBody: 1 }, motionCount: 10,
     expressionCount: 0, lipSyncParameters: ["ParamMouthOpenY"], textureCount: 2,
   },
-  {
-    id: "mao", name: "Mao（官方样例）", source: "bundled", directory: "Mao",
+  mao: {
     settingsVersion: 3, motionGroups: { Idle: 2, TapBody: 6 }, motionCount: 8,
     expressionCount: 8, lipSyncParameters: ["ParamA"], textureCount: 1,
   },
-  {
-    id: "wanko", name: "Wanko（官方宠物样例）", source: "bundled", directory: "Wanko",
+  wanko: {
     settingsVersion: 3, motionGroups: { Idle: 4, TapBody: 6, Shake: 2 }, motionCount: 12,
     expressionCount: 0, lipSyncParameters: ["PARAM_MOUTH_OPEN_Y"], textureCount: 1,
   },
-];
+  haru: {
+    settingsVersion: 3, motionGroups: { Idle: 2, TapBody: 4 }, motionCount: 6,
+    expressionCount: 8, lipSyncParameters: ["ParamMouthOpenY"], textureCount: 2,
+  },
+  mark: {
+    settingsVersion: 3, motionGroups: { Idle: 6 }, motionCount: 6,
+    expressionCount: 0, lipSyncParameters: ["ParamMouthOpenY"], textureCount: 1,
+  },
+  nana: {
+    settingsVersion: 3, motionGroups: {}, motionCount: 0,
+    expressionCount: 0, lipSyncParameters: [], textureCount: 1,
+  },
+  rice: {
+    settingsVersion: 3, motionGroups: { Idle: 1, TapBody: 3 }, motionCount: 4,
+    expressionCount: 0, lipSyncParameters: [], textureCount: 2,
+  },
+  cyannyan: {
+    settingsVersion: 3, motionGroups: {}, motionCount: 0,
+    expressionCount: 16, lipSyncParameters: ["ParamMouthOpenY"], textureCount: 1,
+  },
+  xiaoyun: {
+    settingsVersion: 3, motionGroups: {}, motionCount: 0,
+    expressionCount: 18, lipSyncParameters: ["ParamMouthOpenY"], textureCount: 1,
+  },
+};
+
+const BUNDLED_MODELS: BrowserBundledModel[] = BUNDLED_MODEL_DEFINITIONS.map((definition) => ({
+  id: definition.id,
+  name: definition.name,
+  source: "bundled",
+  origin: definition.origin,
+  temperamentSeed: { ...definition.temperamentSeed },
+  directory: definition.directory,
+  settingsFile: definition.settingsFile,
+  ...BUNDLED_MODEL_METADATA[definition.id]!,
+}));
 
 // 仅用于通过 http:// 的本地浏览器做 UI 预览。Electron 正式运行使用 preload 中的真实桥接。
 if (location.protocol.startsWith("http") && !window.petAgent) {
@@ -117,17 +156,67 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
       relationshipProfile.summary = `我们已经有 ${relationshipProfile.interactionCount} 次互动，仍在从真实交流中确认彼此的习惯。`;
       relationshipProfile.updatedAt = new Date().toISOString();
       relationshipListeners.forEach((listener) => listener(structuredClone(relationshipProfile)));
-      const previewAction: ComputerActionProposal[] | undefined = text.includes("操作预览") ? [{
-        id: crypto.randomUUID(),
-        tool: "open-url" as const,
-        title: "打开项目主页",
-        description: "我会使用默认浏览器打开这个网页，地址在确认后不会变化。",
-        preview: "https://github.com/MonsterN58/memory-pet-agent",
-        severity: "info" as const,
-        requiresApproval: true,
-        allowedDecisions: ["allow-once", "allow-session", "allow-always", "deny"],
-        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-      }] : undefined;
+      const planPreview = text.includes("协作计划");
+      const singlePreview = text.includes("操作预览");
+      const planId = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+      const previewAction: ComputerActionProposal[] | undefined = planPreview
+        ? ([
+            {
+              id: crypto.randomUUID(),
+              tool: "open-url",
+              title: "打开项目主页",
+              description: "使用默认浏览器打开固定地址。",
+              preview: "https://github.com/MonsterN58/memory-pet-agent",
+              severity: "info",
+              requiresApproval: true,
+              allowedDecisions: ["allow-once", "deny"],
+              expiresAt,
+            },
+            {
+              id: crypto.randomUUID(),
+              tool: "copy-text",
+              title: "写入剪贴板",
+              description: "把固定摘要写入系统剪贴板。",
+              preview: "记忆桌宠：动作与协作能力验收完成",
+              severity: "info",
+              requiresApproval: true,
+              allowedDecisions: ["allow-once", "deny"],
+              expiresAt,
+            },
+            {
+              id: crypto.randomUUID(),
+              tool: "office-write",
+              title: "写入 Office",
+              description: "向当前已打开的 Word 文档追加纯文本，不自动保存。",
+              preview: "Word 追加：动作与协作能力验收完成",
+              severity: "warning",
+              requiresApproval: true,
+              allowedDecisions: ["allow-once", "deny"],
+              expiresAt,
+            },
+          ] satisfies ComputerActionProposal[]).map((proposal, index, proposals) => ({
+            ...proposal,
+            plan: {
+              id: planId,
+              title: "桌宠协作验收",
+              step: index + 1,
+              total: proposals.length,
+            },
+          }))
+        : singlePreview
+          ? [{
+              id: crypto.randomUUID(),
+              tool: "open-url",
+              title: "打开项目主页",
+              description: "我会使用默认浏览器打开这个网页，地址在确认后不会变化。",
+              preview: "https://github.com/MonsterN58/memory-pet-agent",
+              severity: "info",
+              requiresApproval: true,
+              allowedDecisions: ["allow-once", "allow-session", "allow-always", "deny"],
+              expiresAt,
+            }]
+          : undefined;
       const previewTools = text.includes("工具调用") || previewAction ? [
         {
           callId: crypto.randomUUID(),
@@ -138,14 +227,16 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
         },
         ...(previewAction ? [{
           callId: crypto.randomUUID(),
-          name: "computer_open_url" as const,
-          label: "准备打开网页",
+          name: planPreview ? "computer_work_plan" as const : "computer_open_url" as const,
+          label: planPreview ? "准备协作计划" : "准备打开网页",
           status: "approval-required" as const,
           summary: "等待用户确认",
         }] : []),
       ] : undefined;
       return {
-        text: text.includes("长回复")
+        text: planPreview
+          ? "我把这项工作整理成了三步，会一项一项等你确认；任何一步停下，后面的步骤也会一起停止。"
+          : text.includes("长回复")
           ? "我会先陪你把这件事慢慢说清楚。你不需要一次把所有情绪整理好，我们可以从今天最让你在意的那一小段开始；如果你愿意，我也会记住其中真正重要的变化，等以后再聊到时自然地接上，而不是像第一次听见那样重新问你。"
           : "我听到了。重要的部分我会慢慢记住，也会在以后合适的时候自然接上。",
         emotion: "happy",
@@ -297,6 +388,8 @@ if (location.protocol.startsWith("http") && !window.petAgent) {
         id: "browser-import-preview",
         name: "Mao（用户导入预览）",
         source: "imported",
+        origin: "user-import",
+        temperamentSeed: undefined,
         importedAt: new Date().toISOString(),
       }, "imported");
       modelListeners.forEach((listener) => listener(structuredClone(modelState)));
@@ -411,18 +504,22 @@ function createModelState(model: Live2DModelInfo, kind: PublicModelState["kind"]
 }
 
 function publicInfo(model: Live2DModelInfo): Live2DModelInfo {
-  const { id, name, source, settingsVersion, motionGroups, motionCount, expressionCount, lipSyncParameters, textureCount, importedAt } = model;
+  const {
+    id, name, source, origin, temperamentSeed, settingsVersion, motionGroups,
+    motionCount, expressionCount, lipSyncParameters, textureCount, importedAt,
+  } = model;
   return {
-    id, name, source, settingsVersion, motionGroups: { ...motionGroups }, motionCount,
+    id, name, source, origin, temperamentSeed: temperamentSeed ? { ...temperamentSeed } : undefined,
+    settingsVersion, motionGroups: { ...motionGroups }, motionCount,
     expressionCount, lipSyncParameters: [...lipSyncParameters], textureCount, importedAt,
   };
 }
 
 async function loadBrowserModelAssets(
-  definition: Live2DModelInfo & { directory: string },
+  definition: BrowserBundledModel,
   info: Live2DModelInfo,
 ): Promise<Live2DModelAssetPackage> {
-  const modelFile = `${definition.directory}.model3.json`;
+  const modelFile = definition.settingsFile;
   const base = `./live2d/${encodeURIComponent(definition.directory)}/`;
   const settingsResponse = await fetch(`${base}${encodeURIComponent(modelFile)}`);
   if (!settingsResponse.ok) throw new Error(`无法读取浏览器预览模型：${settingsResponse.status}`);

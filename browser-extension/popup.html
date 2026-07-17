@@ -14,12 +14,17 @@
     <p>先在桌宠“设置 → 电脑协作”中开启浏览器桥接并复制配对信息，再粘贴到这里。</p>
     <label>桥接地址<input id="endpoint" value="http://127.0.0.1:32145" /></label>
     <label>配对令牌或整段配对信息<textarea id="pairing-token" rows="3" spellcheck="false"></textarea></label>
+    <label class="toggle-row">
+      <input id="command-polling" type="checkbox" />
+      <span>接收桌宠中已审批的网页操作</span>
+    </label>
+    <small class="command-note">支持刷新、前进/后退、分段或顶底滚动和查找文字；每次仍需先在桌宠里确认。打开此面板也会给当前网页授予临时操作权限。</small>
     <div class="actions">
       <button id="save" type="button">保存并测试</button>
       <button id="test" type="button" class="secondary">仅测试</button>
     </div>
     <output id="status">尚未测试连接</output>
-    <small class="privacy">扩展只在你点击右键菜单时读取对应选区或当前页正文；配对信息仅保存在本机浏览器。</small>
+    <small class="privacy">网页正文仍只在你点击右键菜单时读取；操作队列只连接本机桥接，配对信息仅保存在本机浏览器。</small>
     <script src="popup.js"></script>
   </body>
 </html>

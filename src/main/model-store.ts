@@ -6,6 +6,7 @@ import type {
   Live2DModelInfo,
   PublicModelState,
 } from "../common/types";
+import { BUNDLED_MODEL_DEFINITIONS } from "../common/bundled-models";
 
 const MAX_FILES = 240;
 const MAX_DEPTH = 8;
@@ -17,12 +18,9 @@ const MAX_AUDIO_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const MAX_TEXTURES = 8;
 const DEFAULT_BUNDLED_MODEL_ID = "hiyori";
-
-const BUNDLED_MODEL_DEFINITIONS = [
-  { id: "hiyori", name: "Hiyori（官方样例）", directory: "Hiyori" },
-  { id: "mao", name: "Mao（官方样例）", directory: "Mao" },
-  { id: "wanko", name: "Wanko（官方宠物样例）", directory: "Wanko" },
-] as const;
+const MOC3_MAGIC = Buffer.from("MOC3", "ascii");
+const MIN_SUPPORTED_MOC3_VERSION = 1;
+const MAX_SUPPORTED_MOC3_VERSION = 5;
 
 interface CandidateFile {
   absolutePath: string;
@@ -136,6 +134,18 @@ async function readLimited(path: string, maximum: number, label: string): Promis
   return readFile(path);
 }
 
+function validateMoc3Header(content: Buffer): void {
+  if (content.length < 5 || !content.subarray(0, MOC3_MAGIC.length).equals(MOC3_MAGIC)) {
+    throw modelError("Moc 文件头损坏：magic 必须为 MOC3 且包含版本字节");
+  }
+  const version = content[4]!;
+  if (version < MIN_SUPPORTED_MOC3_VERSION || version > MAX_SUPPORTED_MOC3_VERSION) {
+    throw modelError(
+      `Moc 版本 v${version} 不受支持；当前 Cubism Core 5.1 仅支持 v${MIN_SUPPORTED_MOC3_VERSION}-v${MAX_SUPPORTED_MOC3_VERSION}`,
+    );
+  }
+}
+
 function stringReference(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw modelError(`${label}路径无效`);
   return value;
@@ -143,6 +153,7 @@ function stringReference(value: unknown, label: string): string {
 
 function collectModelMetadata(settingsFile: string, json: Live2DSettingsJson): {
   referencedFiles: string[];
+  mocFile: string;
   motionGroups: Record<string, number>;
   expressionCount: number;
   lipSyncParameters: string[];
@@ -162,7 +173,8 @@ function collectModelMetadata(settingsFile: string, json: Live2DSettingsJson): {
     if (value === undefined || value === null || value === "") return;
     referenced.add(resolveReference(settingsFile, stringReference(value, label)));
   };
-  add(moc, "Moc");
+  const mocFile = resolveReference(settingsFile, moc);
+  referenced.add(mocFile);
   for (const texture of references.Textures) add(texture, "Textures");
   add(references.Physics, "Physics");
   add(references.Pose, "Pose");
@@ -212,6 +224,7 @@ function collectModelMetadata(settingsFile: string, json: Live2DSettingsJson): {
 
   return {
     referencedFiles: [...referenced],
+    mocFile,
     motionGroups,
     expressionCount,
     lipSyncParameters,
@@ -242,6 +255,8 @@ export class ModelStore {
         id: definition.id,
         name: definition.name,
         source: "bundled",
+        origin: definition.origin,
+        temperamentSeed: definition.temperamentSeed,
       });
       this.bundled.set(definition.id, manifest);
     }
@@ -263,6 +278,7 @@ export class ModelStore {
           id: stored.id,
           name: stored.name,
           source: "imported",
+          origin: "user-import",
           importedAt: stored.importedAt,
         });
         this.active = { kind: "imported", manifest };
@@ -306,6 +322,7 @@ export class ModelStore {
       id,
       name: basename(sourceRoot).slice(0, 80) || "导入的 Live2D 模型",
       source: "imported",
+      origin: "user-import",
       importedAt,
     });
     const importedRoot = join(this.modelsDirectory, "imported");
@@ -348,7 +365,7 @@ export class ModelStore {
 
   private async inspectDirectory(
     sourceRoot: string,
-    identity: Pick<Live2DModelInfo, "id" | "name" | "source" | "importedAt">,
+    identity: Pick<Live2DModelInfo, "id" | "name" | "source" | "origin" | "temperamentSeed" | "importedAt">,
   ): Promise<StoredModelManifest> {
     const root = resolve(sourceRoot);
     const realRoot = await realpath(root).catch(() => undefined);
@@ -383,6 +400,8 @@ export class ModelStore {
       }
       totalBytes += fileInfo.size;
     }
+    const mocCandidate = candidateMap.get(metadata.mocFile)!;
+    validateMoc3Header(await readLimited(mocCandidate.absolutePath, MAX_MOC_BYTES, `Moc ${metadata.mocFile}`));
     if (totalBytes > MAX_TOTAL_BYTES) throw modelError(`模型总大小不能超过 ${MAX_TOTAL_BYTES / 1024 / 1024}MB`);
     return {
       ...identity,
@@ -404,11 +423,16 @@ export class ModelStore {
   }
 
   private publicInfo(manifest: StoredModelManifest): Live2DModelInfo {
-    const { id, name, source, settingsVersion, motionGroups, motionCount, expressionCount, lipSyncParameters, textureCount, importedAt } = manifest;
+    const {
+      id, name, source, origin, temperamentSeed, settingsVersion, motionGroups,
+      motionCount, expressionCount, lipSyncParameters, textureCount, importedAt,
+    } = manifest;
     return {
       id,
       name,
       source,
+      origin,
+      temperamentSeed: temperamentSeed ? { ...temperamentSeed } : undefined,
       settingsVersion,
       motionGroups: { ...motionGroups },
       motionCount,

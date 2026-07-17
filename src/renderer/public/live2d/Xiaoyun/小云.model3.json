@@ -1,0 +1,49 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "小云.moc3",
+		"Textures": [
+			"小云.8192/texture_00.png"
+		],
+		"Physics": "小云.physics3.json",
+		"Pose": "小云.pose3.json",
+		"DisplayInfo": "小云.cdi3.json",
+		"Expressions": [
+			{ "Name": "点赞", "File": "点赞.exp3.json" },
+			{ "Name": "红晕大", "File": "红晕大.exp3.json" },
+			{ "Name": "红晕小", "File": "红晕小.exp3.json" },
+			{ "Name": "眯眯眼", "File": "眯眯眼.exp3.json" },
+			{ "Name": "头饰切换", "File": "头饰切换.exp3.json" },
+			{ "Name": "小电视表情1", "File": "小电视表情1.exp3.json" },
+			{ "Name": "小电视表情2", "File": "小电视表情2.exp3.json" },
+			{ "Name": "小电视表情3", "File": "小电视表情3.exp3.json" },
+			{ "Name": "小电视表情4", "File": "小电视表情4.exp3.json" },
+			{ "Name": "小电视表情5", "File": "小电视表情5.exp3.json" },
+			{ "Name": "小电视表情6", "File": "小电视表情6.exp3.json" },
+			{ "Name": "小电视表情7", "File": "小电视表情7.exp3.json" },
+			{ "Name": "小电视表情8", "File": "小电视表情8.exp3.json" },
+			{ "Name": "小电视表情9", "File": "小电视表情9.exp3.json" },
+			{ "Name": "小电视表情复原", "File": "小电视表情复原.exp3.json" },
+			{ "Name": "眼睛切换", "File": "眼睛切换.exp3.json" },
+			{ "Name": "嘴巴1", "File": "嘴巴1.exp3.json" },
+			{ "Name": "嘴巴2", "File": "嘴巴2.exp3.json" }
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthOpenY"
+			]
+		}
+	]
+}

@@ -5,6 +5,7 @@ export interface PetModelAdapter {
   readonly id: string;
   mount(container: HTMLElement): Promise<void> | void;
   setState(state: PetEmotion): void;
+  setThinking(active: boolean): void;
   setMotion(frame: PetMotionFrame): void;
   setFocus(focus: PetFocus): void;
   playAction(action: PetAction): boolean;
@@ -50,6 +51,10 @@ export class DefaultPetAdapter implements PetModelAdapter {
     this.root.classList.remove(`state-${this.state}`);
     this.state = state;
     this.root.classList.add(`state-${state}`);
+  }
+
+  setThinking(active: boolean): void {
+    this.root?.classList.toggle("is-thinking", active);
   }
 
   setMotion(frame: PetMotionFrame): void {

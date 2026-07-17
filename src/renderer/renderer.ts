@@ -28,6 +28,10 @@ import type {
 import type { PetModelAdapter } from "./model-adapter";
 import { DefaultPetAdapter } from "./model-adapter";
 import {
+  ComputerProposalQueue,
+  type ComputerProposalTicket,
+} from "./computer-proposal-queue";
+import {
   DialogueDockState,
   dialogueActivityCopy,
   type DialogueActivity,
@@ -98,7 +102,7 @@ async function initializePet(): Promise<void> {
   let busy = false;
   let voiceActive = false;
   let hasPendingComputerAction = false;
-  let activeComputerProposal: ComputerActionProposal | undefined;
+  const computerProposals = new ComputerProposalQueue();
   let currentActivity: DialogueActivity = "ready";
   let renderedPresentation: DialogueDockPresentation = "hidden";
   let hideTimer: number | undefined;
@@ -112,6 +116,7 @@ async function initializePet(): Promise<void> {
   let suppressClick = false;
   let dragStartRequest: Promise<void> | undefined;
   let currentEmotion: PetEmotion = "idle";
+  let thinkingPoseActive = false;
   let currentMotion: PetMotionFrame = {
     state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
   };
@@ -281,9 +286,15 @@ async function initializePet(): Promise<void> {
     if (!model.playAction(action)) showToast(`当前模型暂时无法播放“${action}”动作。`);
   }
 
+  function setModelThinking(active: boolean): void {
+    thinkingPoseActive = active;
+    model.setThinking(active);
+  }
+
   const reactions = new PetReactionCoordinator(new PetReactionDirector(), {
     setEmotion: setModelEmotion,
     playAction: playModelAction,
+    setThinking: setModelThinking,
   });
   const uiLifecycle = new PetUiLifecycle({
     focusChat: () => showDialog(true),
@@ -307,6 +318,7 @@ async function initializePet(): Promise<void> {
       next.resize(mount.clientWidth, mount.clientHeight);
       next.setMotion(currentMotion);
       next.setState(currentEmotion);
+      next.setThinking(thinkingPoseActive);
       next.setFocus(currentFocus);
       const nextRoot = staging.firstElementChild;
       if (!nextRoot) throw new Error("模型没有生成可显示的画面");
@@ -456,20 +468,25 @@ async function initializePet(): Promise<void> {
   }
 
   function renderComputerActions(actions: ComputerActionProposal[]): boolean {
-    const proposal = actions[0];
-    if (!proposal) {
-      if (activeComputerProposal) return true;
-      computerActionCard.hidden = true;
-      hasPendingComputerAction = false;
-      dockState.setPendingAction(false);
-      updateCaptionHint();
-      return false;
+    const transition = computerProposals.acceptResponse(actions);
+    if (transition.cancel.length > 0) void cancelComputerProposals(transition.cancel);
+    if (transition.kind === "preserved") return true;
+    if (transition.active && transition.ticket) {
+      showComputerProposal(transition.active, transition.ticket);
+      return true;
     }
-    activeComputerProposal = proposal;
+    clearComputerProposalView();
+    return false;
+  }
+
+  function showComputerProposal(proposal: ComputerActionProposal, ticket: ComputerProposalTicket): void {
     computerActionCard.hidden = false;
     hasPendingComputerAction = true;
     dockState.setPendingAction(true);
     updateCaptionHint();
+    must<HTMLElement>("#computer-action-step").textContent = proposal.plan
+      ? `${proposal.plan.title} · 步骤 ${proposal.plan.step}/${proposal.plan.total}`
+      : "需要你确认";
     must<HTMLElement>("#computer-action-title").textContent = proposal.title;
     must<HTMLElement>("#computer-action-description").textContent = proposal.description;
     must<HTMLElement>("#computer-action-preview").textContent = proposal.preview;
@@ -488,43 +505,69 @@ async function initializePet(): Promise<void> {
       if (decision === "allow-once") button.classList.add("primary");
       if (decision === "deny") button.classList.add("danger");
       button.addEventListener("click", async () => {
-        buttons.querySelectorAll("button").forEach((item) => { item.disabled = true; });
+        if (!computerProposals.beginExecution(ticket)) return;
+        const decisionButtons = [...buttons.querySelectorAll<HTMLButtonElement>("button")];
+        decisionButtons.forEach((item) => { item.disabled = true; });
         setActivity("working");
         try {
           const result = await bridge.executeComputerAction(proposal.id, decision);
-          computerActionCard.hidden = true;
-          activeComputerProposal = undefined;
-          hasPendingComputerAction = false;
-          dockState.setPendingAction(false);
+          const transition = computerProposals.settle(ticket, result.status);
+          if (transition.kind === "stale") {
+            showToast(result.message);
+            return;
+          }
           const pendingTrace = toolStrip.querySelector<HTMLElement>('[data-status="approval-required"]');
           if (pendingTrace) {
             pendingTrace.dataset.status = result.status === "completed" ? "completed" : "blocked";
             pendingTrace.title = result.message;
           }
           appendLine("assistant", result.message);
-          showToast(result.message);
+          if (transition.kind === "next" && transition.active && transition.ticket) {
+            setModelEmotion("happy");
+            showToast(`${result.message}，准备下一步`);
+            showComputerProposal(transition.active, transition.ticket);
+            setActivity("confirming");
+            showDialog(false, undefined, "expanded");
+            return;
+          }
+          if (transition.cancel.length > 0) void cancelComputerProposals(transition.cancel);
+          clearComputerProposalView();
+          showToast(transition.cancel.length > 0 && result.status !== "completed"
+            ? `${result.message}；后续 ${transition.cancel.length} 步已停止`
+            : result.message);
           if (result.status === "completed") setModelEmotion("happy");
           setActivity("ready");
           showDialog(false, 6000, "caption");
         } catch (error) {
           const message = error instanceof Error ? error.message : "电脑操作失败";
+          const transition = computerProposals.fail(ticket);
           showToast(message);
-          if (/过期/.test(message)) {
-            computerActionCard.hidden = true;
-            activeComputerProposal = undefined;
-            hasPendingComputerAction = false;
-            dockState.setPendingAction(false);
-            setActivity("ready");
-            showDialog(false, 6000, "caption");
-          } else {
-            setActivity("error");
-            buttons.querySelectorAll("button").forEach((item) => { item.disabled = false; });
-          }
+          if (transition.kind === "stale") return;
+          if (transition.cancel.length > 0) void cancelComputerProposals(transition.cancel);
+          clearComputerProposalView();
+          setActivity(/过期/.test(message) ? "ready" : "error");
+          showDialog(false, 6000, "caption");
         }
       });
       buttons.append(button);
     }
-    return true;
+  }
+
+  async function cancelComputerProposals(proposals: readonly ComputerActionProposal[]): Promise<void> {
+    for (const proposal of proposals) {
+      try {
+        await bridge.executeComputerAction(proposal.id, "deny");
+      } catch {
+        // 过期或已完成的后续步骤不应阻塞当前界面收尾。
+      }
+    }
+  }
+
+  function clearComputerProposalView(): void {
+    computerActionCard.hidden = true;
+    hasPendingComputerAction = false;
+    dockState.setPendingAction(false);
+    updateCaptionHint();
   }
 
   async function sendMessage(raw?: string): Promise<void> {
@@ -539,7 +582,7 @@ async function initializePet(): Promise<void> {
     renderToolTraces([]);
     setActivity("thinking");
     showDialog(false, undefined, "expanded");
-    setModelEmotion("thinking");
+    reactions.beginThinking();
     let failed = false;
     try {
       handleResponse(await bridge.chat(text));
@@ -549,7 +592,7 @@ async function initializePet(): Promise<void> {
       appendLine("assistant", `刚才没有顺利处理：${message}`);
       showToast(message);
       setActivity("error");
-      setModelEmotion("idle");
+      reactions.finishThinking("idle");
     } finally {
       busy = false;
       dockState.setBusy(false);
@@ -904,8 +947,16 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     const name = must<HTMLElement>("#model-state-name");
     const details = must<HTMLElement>("#model-state-details");
     const select = must<HTMLSelectElement>("#model-bundled-select");
+    const originLabels = {
+      "official-sample": "Live2D 官方样例",
+      "third-party": "第三方授权模型",
+      "user-import": "用户导入",
+    } as const;
+    const temperament = state.model.temperamentSeed
+      ? ` · 初始气质：${state.model.temperamentSeed.label}`
+      : "";
     name.textContent = state.model.name;
-    details.textContent = `Cubism model3 v${state.model.settingsVersion} · ${state.model.textureCount} 张贴图 · ${state.model.motionCount} 个 motion · ${state.model.expressionCount} 个表情${state.model.lipSyncParameters.length ? " · 支持口型" : ""}${state.kind === "imported" ? " · 用户导入" : " · 官方样例"}`;
+    details.textContent = `Cubism model3 v${state.model.settingsVersion} · ${state.model.textureCount} 张贴图 · ${state.model.motionCount} 个 motion · ${state.model.expressionCount} 个表情 · ${state.model.lipSyncParameters.length ? "支持口型" : "无口型参数"} · ${originLabels[state.model.origin]}${temperament}`;
     select.replaceChildren(...state.bundledModels.map((model) => new Option(model.name, model.id)));
     select.value = state.kind === "bundled" ? state.model.id : state.bundledModels[0]?.id ?? "";
   }
@@ -1194,6 +1245,8 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
     must<HTMLSelectElement>("#setting-permission-copy-text").value = value.computer.permissions["copy-text"];
     must<HTMLSelectElement>("#setting-permission-save-text-file").value = value.computer.permissions["save-text-file"];
     must<HTMLSelectElement>("#setting-permission-launch-app").value = value.computer.permissions["launch-app"];
+    must<HTMLSelectElement>("#setting-permission-browser-control").value = value.computer.permissions["browser-control"];
+    must<HTMLSelectElement>("#setting-permission-office-write").value = value.computer.permissions["office-write"];
     input("#setting-heartbeat-enabled").checked = value.heartbeat.enabled;
     input("#setting-heartbeat-interval").value = String(value.heartbeat.intervalMinutes);
     input("#setting-l1-max").value = String(value.heartbeat.l1MaxItems);
@@ -1302,6 +1355,8 @@ async function initializePanel(initialView: ControlPanelView): Promise<void> {
           "copy-text": must<HTMLSelectElement>("#setting-permission-copy-text").value as AgentSettings["computer"]["permissions"]["copy-text"],
           "save-text-file": must<HTMLSelectElement>("#setting-permission-save-text-file").value as AgentSettings["computer"]["permissions"]["save-text-file"],
           "launch-app": must<HTMLSelectElement>("#setting-permission-launch-app").value as AgentSettings["computer"]["permissions"]["launch-app"],
+          "browser-control": must<HTMLSelectElement>("#setting-permission-browser-control").value as AgentSettings["computer"]["permissions"]["browser-control"],
+          "office-write": must<HTMLSelectElement>("#setting-permission-office-write").value as AgentSettings["computer"]["permissions"]["office-write"],
         },
       },
       window: {

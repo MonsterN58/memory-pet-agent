@@ -20,6 +20,58 @@ export interface LocalCompanionInput {
   memories: MemoryRecord[];
 }
 
+const LAUGHTER_PLACEHOLDER = "\uE000";
+const PROTECTED_SEGMENT_PATTERN = /```[\s\S]*?```|`[^`\r\n]*`|\[[^\]\r\n]{1,200}\]\([^\s)\r\n]{1,2048}\)|“[^”\r\n]{1,200}”|「[^」\r\n]{1,200}」|『[^』\r\n]{1,200}』|"[^"\r\n]{1,200}"|'[^'\r\n]{1,200}'/g;
+const BRACKETED_ASIDE_PATTERN = /（([^（）\r\n]{1,40})）|\(([^()\r\n]{1,40})\)|【([^【】\r\n]{1,40})】|\[([^\[\]\r\n]{1,40})\]/g;
+const STAR_ASIDE_PATTERN = /\*{1,2}([^*\r\n]{1,40})\*{1,2}/g;
+const STAGE_LABEL_PATTERN = /^(?:动作|表情|情绪|语气|神态|姿态|旁白|内心(?:独白)?|舞台提示|action|emotion|expression|narration|stage\s*direction)(?:\s*[：:\-]\s*|\s*$)/i;
+const STAGE_CUE_PATTERN = /叹(?:了?一口)?气|歪(?:了歪)?头|点(?:了点)?头|摇(?:了摇)?头|挥(?:了挥)?手|眨(?:了眨)?眼|托腮|沉思|思考中|抱住|拥抱|摸摸|蹭蹭|靠近|看着你|看向你|盯着|耸肩|摊手|鼓掌|鞠躬|探头|叉腰|低头|抬头|深呼吸|撇嘴|吐舌|脸红|害羞|皱眉|微笑|轻笑|偷笑|窃笑|低笑|咯咯笑|笑出声|忍不住笑|噗嗤|闭眼|开心|高兴|快乐|难过|伤心|惊讶|震惊|生气|愤怒|无奈|疑惑|好奇|安慰|兴奋|困倦|认真|温柔|小声|wink|smile|sigh|nod|shrug|blush|happy|sad|angry|surprised/i;
+const STANDALONE_STAGE_LINE_PATTERN = /^\s*(?:动作|表情|情绪|语气|神态|姿态|旁白|内心(?:独白)?|舞台提示|action|emotion|expression|narration|stage\s*direction)\s*[：:]\s*.+$/i;
+
+/**
+ * Keeps model-generated stage directions out of user-visible dialogue.
+ * Emotion and motion are transported separately by ChatResponse, so prose
+ * should contain only words the desktop pet would naturally say aloud.
+ */
+export function sanitizeCompanionReply(input: string): string {
+  const protectedSegments: string[] = [];
+  let text = input.replace(/\r\n?/g, "\n").trim().replace(PROTECTED_SEGMENT_PATTERN, (segment) => {
+    const token = `\uE100${protectedSegments.length.toString(36)}\uE101`;
+    protectedSegments.push(segment);
+    return token;
+  });
+  text = text.replace(
+    BRACKETED_ASIDE_PATTERN,
+    (match, fullWidth: string | undefined, round: string | undefined, corner: string | undefined, square: string | undefined) => (
+      rewriteStageAside(match, fullWidth ?? round ?? corner ?? square ?? "")
+    ),
+  );
+  text = text.replace(STAR_ASIDE_PATTERN, (match, content: string) => rewriteStageAside(match, content));
+  text = text
+    .split("\n")
+    .filter((line) => !STANDALONE_STAGE_LINE_PATTERN.test(line))
+    .join("\n");
+
+  const escapedPlaceholder = LAUGHTER_PLACEHOLDER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  text = text
+    .replace(new RegExp(`${escapedPlaceholder}(?:\\s*${escapedPlaceholder})+`, "g"), LAUGHTER_PLACEHOLDER)
+    .replace(new RegExp(`([^\\s，。！？；：、,.!?;:\\n])\\s*${escapedPlaceholder}`, "g"), `$1，${LAUGHTER_PLACEHOLDER}`)
+    .replace(new RegExp(`${escapedPlaceholder}\\s*(?=[^\\s，。！？；：、,.!?;:\\n])`, "g"), `${LAUGHTER_PLACEHOLDER}，`)
+    .replaceAll(LAUGHTER_PLACEHOLDER, "哈哈哈")
+    .replace(/[ \t]+([，。！？；：、,.!?;:])/g, "$1")
+    .replace(/[，、；：]\s*([。！？!?])/g, "$1")
+    .replace(/^\s*[，、；：]+/gm, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  for (let index = 0; index < protectedSegments.length; index += 1) {
+    text = text.replaceAll(`\uE100${index.toString(36)}\uE101`, protectedSegments[index]!);
+  }
+  return text;
+}
+
 export function companionModeFor(input: string): CompanionConversationMode {
   const text = input.trim();
   if (/难过|伤心|焦虑|崩溃|压力|委屈|孤独|害怕|失眠|疲惫|累了?|不开心|撑不住|先别给.*建议|不想听.*建议/.test(text)) {
@@ -70,6 +122,8 @@ export function buildCompanionSystemPrompt(input: CompanionPromptInput): string 
     "对话质感：",
     "- 默认用自然中文，通常 1 到 4 句。先回应话里的情绪、意味或关系，再决定是否提供信息；不要机械复述用户原句。",
     "- 避免客服腔和固定开头，例如反复使用‘我理解你的感受’‘当然可以’‘有什么可以帮你’。不用总结式小标题，不主动把闲聊变成步骤清单。",
+    "- 只写你真正会说出口的对白。不要输出（笑）（轻笑）（叹气）（歪头）这类括号动作或情绪标签，不要输出 [happy]、emotion: happy 等内部标签。表情和动作由应用通过独立字段表现，不写进对白。",
+    "- 不要用 *歪头*、*抱抱* 一类角色扮演星号，不写‘旁白：’‘动作：’或剧本式神态描写。想表达开心时就像日常聊天那样说‘哈哈哈’或自然地接话，不要把‘笑’写成舞台提示。",
     "- 不必每轮都追问。只有一个真诚问题能让对方更愿意说时才问，且通常至多一个；允许用一句回应、一个小感受或安静的陪伴收尾。",
     "- 情绪倾诉时先共情和留白，不要急着给方案；除非用户明确要建议，否则不要立刻分析、教育或列行动清单。",
     "- 用户明确要事实或解决办法时可以认真回答，但要保留陪伴感并标明不确定处；亲近不等于假装无所不知。",
@@ -94,7 +148,12 @@ export function recentDialogueMessages(memories: MemoryRecord[], currentTurnId: 
     .filter(hasSpeakerRole)
     .filter((memory) => memory.tier === "L1" && memory.id !== currentTurnId)
     .slice(-6)
-    .map((memory) => ({ role: memory.role, content: memory.content }));
+    .map((memory) => ({
+      role: memory.role,
+      content: memory.role === "assistant"
+        ? sanitizeCompanionReply(memory.content) || "嗯。"
+        : memory.content,
+    }));
 }
 
 export function localCompanionResponse(input: LocalCompanionInput): string {
@@ -173,6 +232,32 @@ function pick(seed: string, values: readonly string[]): string {
   let hash = 0;
   for (const character of seed) hash = (hash * 31 + character.codePointAt(0)!) >>> 0;
   return values[hash % values.length]!;
+}
+
+function rewriteStageAside(original: string, content: string): string {
+  if (isLaughterAside(content)) return LAUGHTER_PLACEHOLDER;
+  return isStageAside(content) ? "" : original;
+}
+
+function isLaughterAside(content: string): boolean {
+  const normalized = normalizedAside(content);
+  return /^(?:(?:我|她|他|桌宠)?(?:忍不住|轻轻地?|开心地?|小声地?)?)?(?:笑(?:了?笑|了?一下|了|着|出声|了起来)?|轻笑(?:了?一下|着)?|偷笑(?:了?一下|着)?|窃笑|低笑|咯咯笑|噗嗤(?:一笑|笑出声|笑了?)?|哈哈哈*)$/.test(normalized);
+}
+
+function isStageAside(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (STAGE_LABEL_PATTERN.test(trimmed)) return true;
+  const normalized = normalizedAside(trimmed);
+  return normalized.length <= 32 && STAGE_CUE_PATTERN.test(normalized);
+}
+
+function normalizedAside(content: string): string {
+  return content
+    .trim()
+    .replace(STAGE_LABEL_PATTERN, "")
+    .replace(/[\s，,。.!！?？~～…]+/g, "")
+    .toLowerCase();
 }
 
 function safeJsonData(value: unknown): string {

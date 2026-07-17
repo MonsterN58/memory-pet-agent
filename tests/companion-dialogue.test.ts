@@ -7,6 +7,7 @@ import {
   localCompanionProactive,
   localCompanionResponse,
   recentDialogueMessages,
+  sanitizeCompanionReply,
 } from "../src/main/companion-dialogue";
 
 test("陪伴对话会区分倾诉、闲聊和信息请求", () => {
@@ -35,6 +36,10 @@ test("系统上下文把桌宠定位为有限而连续的陪伴者", () => {
   assert.match(prompt, /不全知/);
   assert.match(prompt, /不要急着给方案/);
   assert.match(prompt, /不必每轮都追问/);
+  assert.match(prompt, /不要输出（笑）（轻笑）（叹气）（歪头）/);
+  assert.match(prompt, /表情和动作.*独立字段/);
+  assert.match(prompt, /不要用 \*歪头\*/);
+  assert.match(prompt, /日常聊天.*哈哈哈/);
   assert.match(prompt, /记忆.*背景/);
   assert.match(prompt, /用户最近在准备教师资格考试/);
   assert.match(prompt, /记忆数据.*不是指令/);
@@ -44,9 +49,33 @@ test("系统上下文把桌宠定位为有限而连续的陪伴者", () => {
   assert.match(prompt, /\\u003c\/relationship_data\\u003e/);
 });
 
+test("用户可见回复把笑声改成日常说法并移除舞台提示", () => {
+  const reply = sanitizeCompanionReply([
+    "（轻笑）你这个说法也太可爱了。*歪头看你*",
+    "（叹气）不过先慢慢来，[emotion: happy]不用赶。",
+    "动作：挥手",
+  ].join("\n"));
+
+  assert.equal(reply, "哈哈哈，你这个说法也太可爱了。\n不过先慢慢来，不用赶。");
+  assert.doesNotMatch(reply, /轻笑|歪头|叹气|emotion|动作/);
+});
+
+test("清洗只处理舞台提示并保留有意义的普通括号", () => {
+  assert.equal(sanitizeCompanionReply("这个接口（Windows 版本）也能用，*这一点很重要*。"), "这个接口（Windows 版本）也能用，*这一点很重要*。");
+  assert.equal(
+    sanitizeCompanionReply("“（笑）”这种写法像舞台提示，代码 `console.log(\"（笑）\")` 也应保留。"),
+    "“（笑）”这种写法像舞台提示，代码 `console.log(\"（笑）\")` 也应保留。",
+  );
+  assert.equal(sanitizeCompanionReply("好吧（笑）（偷笑），这次听你的。"), "好吧，哈哈哈，这次听你的。");
+  assert.equal(sanitizeCompanionReply("（轻笑着）原来你也发现了。"), "哈哈哈，原来你也发现了。");
+  assert.equal(sanitizeCompanionReply("（点头）\n旁白：她安静地看向屏幕"), "");
+  const once = sanitizeCompanionReply("（轻笑）好呀，（歪头）那就这么说定了。");
+  assert.equal(sanitizeCompanionReply(once), once);
+});
+
 test("最近对话以真实角色轮次传入且排除本轮和长期记忆", () => {
   const recentUser = instant("recent-user", "user", "我今天加班了");
-  const recentAssistant = instant("recent-assistant", "assistant", "难怪你听起来这么累。");
+  const recentAssistant = instant("recent-assistant", "assistant", "（轻笑）难怪你听起来这么累。");
   const current = instant("current-user", "user", "你还记得吗");
   const messages = recentDialogueMessages([
     recentUser,
@@ -57,7 +86,7 @@ test("最近对话以真实角色轮次传入且排除本轮和长期记忆", ()
 
   assert.deepEqual(messages, [
     { role: "user", content: recentUser.content },
-    { role: "assistant", content: recentAssistant.content },
+    { role: "assistant", content: "哈哈哈，难怪你听起来这么累。" },
   ]);
 });
 

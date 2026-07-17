@@ -1,6 +1,7 @@
 import type {
   AgentSettings,
   MemoryRecord,
+  ModelTemperamentSeed,
   PersonalityDimension,
   PersonalityProfile,
   PersonalityTraitState,
@@ -32,6 +33,8 @@ const DIMENSION_LABELS: Record<PersonalityDimension, { high: string; low: string
   initiative: { high: "积极主动", low: "安静等待" },
   expressiveness: { high: "表达丰富", low: "简洁凝练" },
 };
+
+const ESTABLISHED_TRAIT_CONFIDENCE = 0.12;
 
 export class PersonalityEngine {
   private reviewedMemoryIds = new Set<string>();
@@ -98,10 +101,33 @@ export class PersonalityEngine {
     });
   }
 
-  behaviorContext(): string {
+  behaviorContext(seed?: ModelTemperamentSeed): string {
     const profile = this.store.getProfile();
     const minimumEvidence = this.getSettings().personality.minimumEvidence;
-    const active = profile.traits.filter((trait) => trait.evidenceCount >= minimumEvidence && trait.confidence >= 0.12);
+    const traits = new Map(profile.traits.map((trait) => [trait.dimension, trait]));
+    const active = profile.traits.filter((trait) => this.hasEnoughEvidence(trait, minimumEvidence));
+    const learnedDimensions = new Set(active.map((trait) => trait.dimension));
+    const temperament = sanitizeTemperamentSeed(seed);
+
+    if (temperament && learnedDimensions.size < DIMENSION_ORDER.length) {
+      const dimensions = DIMENSION_ORDER.map((dimension) => {
+        const trait = traits.get(dimension);
+        if (trait && this.hasEnoughEvidence(trait, minimumEvidence)) {
+          return this.describeLearnedTrait(trait, true);
+        }
+        return this.describeTemperamentDimension(dimension, temperament[dimension]);
+      });
+      return [
+        `人格成长阶段：${profile.stage}；累计互动：${profile.interactionCount}。`,
+        `当前模型的初始身体气质：${temperament.label}；${temperament.summary}`,
+        "身体气质只是互动证据不足时的低置信表达起点，不是用户事实，也不会写入人格档案；每个维度一旦累积到足够证据与置信度，就由真实人格状态逐维覆盖。切换身体不会清空已经形成的人格。",
+        learnedDimensions.size
+          ? `当前已有 ${learnedDimensions.size}/${DIMENSION_ORDER.length} 个维度由真实互动证据决定，其余维度暂用身体气质。`
+          : "当前还没有维度形成足够证据，六个维度暂用身体气质柔和表达。",
+        ...dimensions,
+      ].join("\n");
+    }
+
     if (!active.length) {
       return [
         "人格成长状态：空白或仍在观察期，没有足够证据形成稳定特质。",
@@ -111,11 +137,23 @@ export class PersonalityEngine {
     return [
       `人格成长阶段：${profile.stage}；累计互动：${profile.interactionCount}。`,
       "以下是证据驱动的连续状态（0=左侧倾向，1=右侧倾向），只能按置信度柔和体现，不得把它们宣称为用户事实：",
-      ...active.map((trait) => {
-        const labels = DIMENSION_LABELS[trait.dimension];
-        return `- ${trait.dimension}: ${labels.low} ← ${trait.score.toFixed(2)} → ${labels.high}; confidence=${trait.confidence.toFixed(2)}; evidence=${trait.evidenceCount}`;
-      }),
+      ...active.map((trait) => this.describeLearnedTrait(trait)),
     ].join("\n");
+  }
+
+  private hasEnoughEvidence(trait: PersonalityTraitState, minimumEvidence: number): boolean {
+    return trait.evidenceCount >= minimumEvidence && trait.confidence >= ESTABLISHED_TRAIT_CONFIDENCE;
+  }
+
+  private describeLearnedTrait(trait: PersonalityTraitState, includeSource = false): string {
+    const labels = DIMENSION_LABELS[trait.dimension];
+    const source = includeSource ? "; source=learned" : "";
+    return `- ${trait.dimension}: ${labels.low} ← ${trait.score.toFixed(2)} → ${labels.high}; confidence=${trait.confidence.toFixed(2)}; evidence=${trait.evidenceCount}${source}`;
+  }
+
+  private describeTemperamentDimension(dimension: PersonalityDimension, score: number): string {
+    const labels = DIMENSION_LABELS[dimension];
+    return `- ${dimension}: ${labels.low} ← ${score.toFixed(2)} → ${labels.high}; confidence=low; evidence=0; source=model-temperament`;
   }
 
   private localSignals(text: string): PersonalitySignal[] {
@@ -222,4 +260,25 @@ function validSignal(signal: PersonalitySignal): boolean {
     && signal.weight > 0
     && typeof signal.evidence === "string"
     && Boolean(signal.evidence.trim());
+}
+
+function sanitizeTemperamentSeed(seed: ModelTemperamentSeed | undefined): ModelTemperamentSeed | undefined {
+  if (!seed || typeof seed !== "object") return undefined;
+  const label = compactSeedText(seed.label, 40);
+  const summary = compactSeedText(seed.summary, 160);
+  if (!label || !summary) return undefined;
+  const values = Object.fromEntries(DIMENSION_ORDER.map((dimension) => [dimension, Number(seed[dimension])])) as Record<
+    PersonalityDimension,
+    number
+  >;
+  if (DIMENSION_ORDER.some((dimension) => !Number.isFinite(values[dimension]))) return undefined;
+  return {
+    label,
+    summary,
+    ...Object.fromEntries(DIMENSION_ORDER.map((dimension) => [dimension, clamp(values[dimension])])),
+  } as ModelTemperamentSeed;
+}
+
+function compactSeedText(value: unknown, maxLength: number): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maxLength) : "";
 }

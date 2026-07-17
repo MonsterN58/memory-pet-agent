@@ -57,6 +57,8 @@ export const DEFAULT_SETTINGS: AgentSettings = {
       "copy-text": "ask",
       "save-text-file": "ask",
       "launch-app": "ask",
+      "browser-control": "ask",
+      "office-write": "ask",
     },
   },
   window: {

@@ -17,6 +17,7 @@ import {
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
+import { PET_ACTIONS } from "../common/types";
 import type {
   ComputerActionDecision,
   ComputerIntegrationState,
@@ -38,6 +39,7 @@ import { AgentToolRuntime } from "./agent-tools";
 import { BrowserContextServer } from "./computer/browser-context-server";
 import { ComputerCapabilityController } from "./computer/computer-capability-controller";
 import type { AllowedDesktopApp } from "./computer/computer-action-planner";
+import { OfficeAutomationService } from "./computer/office-automation-service";
 import { DesktopMovementController } from "./desktop-movement-controller";
 import { DesktopAwarenessService, type DesktopScreenFrame } from "./desktop-awareness-service";
 import { HeartbeatService } from "./heartbeat-service";
@@ -79,10 +81,6 @@ let computerController: ComputerCapabilityController;
 let browserContextServer: BrowserContextServer;
 let clipboardShortcutRegistered = false;
 const CLIPBOARD_EXPLAIN_SHORTCUT = "CommandOrControl+Shift+E";
-const PET_ACTIONS: PetAction[] = [
-  "wave", "nod", "shake-head", "head-tilt", "jump", "cheer", "dance",
-  "sit", "stretch", "shy", "comfort", "sleep", "surprised",
-];
 const smokeTest = process.argv.includes("--smoke-test");
 const modelSwitchSmoke = process.argv.includes("--model-switch-smoke");
 const voiceUiSmoke = process.argv.includes("--voice-ui-smoke");
@@ -160,12 +158,15 @@ function createPetWindow(): BrowserWindow {
     });
   }
   if (modelSwitchSmoke) {
-    const sequence = ["hiyori", "mao", "wanko", "hiyori"];
+    const sequence = [
+      "hiyori", "mao", "wanko", "haru", "mark",
+      "nana", "rice", "cyannyan", "xiaoyun", "hiyori",
+    ];
     let sequenceIndex = 0;
     const timeout = setTimeout(() => {
       console.error(`ELECTRON_MODEL_SWITCH_TEST_TIMEOUT expected=${sequence[sequenceIndex] ?? "complete"}`);
       app.exit(1);
-    }, 45_000);
+    }, 120_000);
     window.webContents.on("console-message", (details) => {
       const modelId = /^LIVE2D_MODEL_READY live2d:bundled:([a-z0-9-]+)$/.exec(details.message)?.[1];
       if (!modelId || modelId !== sequence[sequenceIndex]) return;
@@ -308,7 +309,16 @@ function modelAndActionsMenu(): MenuItemConstructorOptions {
     comfort: "安慰",
     sleep: "睡觉",
     surprised: "惊讶",
+    bow: "鞠躬致谢",
+    applaud: "鼓掌",
+    peek: "探头查看",
+    ponder: "认真思考",
+    present: "展示结果",
   };
+  const actionMenu = (actions: readonly PetAction[]): MenuItemConstructorOptions[] => actions.map((action) => ({
+    label: actionLabels[action],
+    click: () => triggerPetAction(action),
+  }));
   return {
     label: "模型与动作",
     submenu: [
@@ -325,10 +335,14 @@ function modelAndActionsMenu(): MenuItemConstructorOptions {
         click: () => void selectBundledModel(model.id),
       })),
       { type: "separator" },
-      ...PET_ACTIONS.map<MenuItemConstructorOptions>((action) => ({
-        label: actionLabels[action],
-        click: () => triggerPetAction(action),
-      })),
+      {
+        label: "动作预览",
+        submenu: [
+          { label: "交流", submenu: actionMenu(["wave", "nod", "shake-head", "head-tilt", "bow", "present"]) },
+          { label: "工作状态", submenu: actionMenu(["peek", "ponder", "sit", "stretch", "sleep"]) },
+          { label: "情绪表达", submenu: actionMenu(["jump", "cheer", "dance", "applaud", "shy", "comfort", "surprised"]) },
+        ],
+      },
     ],
   };
 }
@@ -967,12 +981,15 @@ async function initialize(): Promise<void> {
     sendPetMotion,
     sendFocus,
   );
+  const officeAutomationService = new OfficeAutomationService();
   computerController = new ComputerCapabilityController(dataDirectory, {
     getSettings: () => settingsStore.get(),
     openUrl: (url) => shell.openExternal(url),
     copyText: (text) => clipboard.writeText(text),
     saveText: saveComputerText,
     launchApp: launchAllowedApp,
+    executeBrowserCommand: (request) => browserContextServer.enqueueCommand(request),
+    executeOffice: (request) => officeAutomationService.execute(request),
     persistPermission: async (tool: ComputerTool, policy) => {
       const current = settingsStore.get().computer;
       await updateSettings({
@@ -992,7 +1009,14 @@ async function initialize(): Promise<void> {
     computer: computerController,
     getSettings: () => settingsStore.get(),
   });
-  agentService = new AgentService(memoryEngine, settingsStore, personalityEngine, relationshipEngine, agentTools);
+  agentService = new AgentService(
+    memoryEngine,
+    settingsStore,
+    personalityEngine,
+    relationshipEngine,
+    agentTools,
+    () => modelStore.getState().model.temperamentSeed,
+  );
   heartbeatService = new HeartbeatService(
     memoryEngine,
     memoryRepository,

@@ -1,12 +1,29 @@
 const DEFAULT_ENDPOINT = "http://127.0.0.1:32145";
 const endpoint = document.querySelector("#endpoint");
 const token = document.querySelector("#pairing-token");
+const commandPolling = document.querySelector("#command-polling");
 const status = document.querySelector("#status");
 
-void chrome.storage.local.get({ endpoint: DEFAULT_ENDPOINT, pairingToken: "", lastStatus: "" }).then((value) => {
+void chrome.storage.local.get({
+  endpoint: DEFAULT_ENDPOINT,
+  pairingToken: "",
+  commandPollingEnabled: false,
+  lastStatus: "",
+  lastStatusOk: false,
+  lastStatusAt: 0,
+  lastCommandStatus: "",
+  lastCommandStatusOk: false,
+  lastCommandStatusAt: 0,
+}).then((value) => {
   endpoint.value = value.endpoint;
   token.value = value.pairingToken;
-  if (value.lastStatus) status.textContent = value.lastStatus;
+  commandPolling.checked = value.commandPollingEnabled === true;
+  const commandStatusIsLatest = value.lastCommandStatusAt > value.lastStatusAt;
+  const latestStatus = commandStatusIsLatest ? value.lastCommandStatus : value.lastStatus;
+  if (latestStatus) {
+    status.textContent = latestStatus;
+    status.dataset.ok = String(commandStatusIsLatest ? value.lastCommandStatusOk : value.lastStatusOk);
+  }
 });
 
 document.querySelector("#save").addEventListener("click", () => void saveAndTest(true));
@@ -17,7 +34,11 @@ async function saveAndTest(save) {
     const parsed = parsePairingInput(token.value, endpoint.value);
     endpoint.value = parsed.endpoint;
     token.value = parsed.pairingToken;
-    if (save) await chrome.storage.local.set(parsed);
+    const storedConfig = { ...parsed, commandPollingEnabled: commandPolling.checked };
+    if (save) {
+      await chrome.storage.local.set(storedConfig);
+      await chrome.runtime.sendMessage({ type: "memory-pet-refresh-command-polling" }).catch(() => undefined);
+    }
     status.dataset.ok = "pending";
     status.textContent = "正在连接桌宠…";
     const response = await fetch(`${normalizeEndpoint(parsed.endpoint)}/health`, {
@@ -26,7 +47,9 @@ async function saveAndTest(save) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `连接返回 ${response.status}`);
     status.dataset.ok = "true";
-    status.textContent = "连接成功，现在可以在网页中使用右键菜单。";
+    status.textContent = save && commandPolling.checked
+      ? "连接成功，已开始接收桌宠中确认过的网页操作。"
+      : "连接成功，现在可以在网页中使用右键菜单。";
   } catch (error) {
     status.dataset.ok = "false";
     status.textContent = error instanceof Error ? error.message : "连接失败";

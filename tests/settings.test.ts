@@ -31,6 +31,8 @@ test("设置清洗会限制危险或越界输入", () => {
         "copy-text": "allow",
         "save-text-file": "allow",
         "launch-app": "deny",
+        "browser-control": "allow",
+        "office-write": "allow",
       },
     },
     window: { ...DEFAULT_SETTINGS.window, roamingSpeed: 99 },
@@ -61,6 +63,8 @@ test("设置清洗会限制危险或越界输入", () => {
   assert.equal(settings.computer.permissions["copy-text"], "allow");
   assert.equal(settings.computer.permissions["save-text-file"], "ask");
   assert.equal(settings.computer.permissions["launch-app"], "deny");
+  assert.equal(settings.computer.permissions["browser-control"], "ask");
+  assert.equal(settings.computer.permissions["office-write"], "ask");
   assert.equal(settings.window.roamingSpeed, 4);
 });
 

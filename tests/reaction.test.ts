@@ -99,6 +99,20 @@ test("阻塞期间只保留最新回复且文本语义优先轻动作", () => {
   assert.equal(director.choose(reactionInput("no", "thinking", "不，这次先不要继续。")), "shake-head");
 });
 
+test("协作语境会选择致谢、查看、展示、鼓掌和沉思动作", () => {
+  const cases = [
+    ["thanks", "happy", "谢谢你一直陪我一起处理。", "bow"],
+    ["inspect", "curious", "让我看看当前网页的内容。", "peek"],
+    ["result", "idle", "方案如下，我已经准备好给你展示。", "present"],
+    ["success", "happy", "这部分已经完成，我们做到了。", "applaud"],
+    ["reason", "thinking", "我在认真分析其中的关联。", "ponder"],
+  ] as const;
+  for (const [replyId, emotion, text, expected] of cases) {
+    const director = new PetReactionDirector({ now: () => 35_000, random: () => 0 });
+    assert.equal(director.choose(reactionInput(replyId, emotion, text)), expected);
+  }
+});
+
 test("Renderer 协调器先更新情绪并为连续回复生成独立动作", () => {
   const events: string[] = [];
   const coordinator = new PetReactionCoordinator(
@@ -117,6 +131,68 @@ test("Renderer 协调器先更新情绪并为连续回复生成独立动作", ()
     "emotion:curious", "action:head-tilt",
     "emotion:curious", "action:head-tilt",
   ]);
+});
+
+test("思考姿态延迟出现，快速回复会取消且回复动作随后取得优先级", () => {
+  const events: string[] = [];
+  const scheduler = new FakeScheduler();
+  const coordinator = new PetReactionCoordinator(
+    new PetReactionDirector({ now: () => scheduler.now, random: () => 0 }),
+    {
+      setEmotion: (emotion) => events.push(`emotion:${emotion}`),
+      playAction: (action) => events.push(`action:${action}`),
+      setThinking: (active) => events.push(`thinking:${active}`),
+    },
+    scheduler.options(),
+  );
+
+  coordinator.beginThinking();
+  scheduler.advance(649);
+  assert.deepEqual(events, ["emotion:thinking"]);
+  coordinator.handleResponse({ emotion: "curious", text: "我想到一个切入点。" });
+  scheduler.advance(1);
+  assert.deepEqual(events, ["emotion:thinking", "emotion:curious", "action:head-tilt"]);
+
+  coordinator.beginThinking();
+  scheduler.advance(650);
+  assert.equal(events.at(-1), "thinking:true");
+  coordinator.handleResponse({ emotion: "comforting", text: "我们慢慢来。" });
+  assert.deepEqual(events.slice(-3), ["thinking:false", "emotion:comforting", "action:comfort"]);
+});
+
+test("录音、拖拽和手动动作会撤下思考姿态，解除拖拽后才重新延迟出现", () => {
+  const events: string[] = [];
+  const scheduler = new FakeScheduler();
+  const coordinator = new PetReactionCoordinator(
+    new PetReactionDirector({ now: () => scheduler.now, random: () => 0 }),
+    {
+      setEmotion: (emotion) => events.push(`emotion:${emotion}`),
+      playAction: (action) => events.push(`action:${action}`),
+      setThinking: (active) => events.push(`thinking:${active}`),
+    },
+    scheduler.options(),
+  );
+
+  coordinator.beginThinking();
+  scheduler.advance(650);
+  coordinator.setMotion("dragged");
+  assert.deepEqual(events.slice(-2), ["thinking:true", "thinking:false"]);
+  coordinator.setMotion("falling");
+  scheduler.advance(2_000);
+  assert.equal(events.at(-1), "thinking:false");
+  coordinator.setMotion("idle");
+  scheduler.advance(649);
+  assert.equal(events.at(-1), "thinking:false");
+  scheduler.advance(1);
+  assert.equal(events.at(-1), "thinking:true");
+
+  coordinator.setVoiceActive(true);
+  assert.deepEqual(events.slice(-2), ["thinking:false", "emotion:listening"]);
+  coordinator.setVoiceActive(false);
+  coordinator.playManualAction("wave");
+  scheduler.advance(1_000);
+  assert.equal(events.at(-1), "action:wave");
+  assert.equal(events.filter((event) => event === "thinking:true").length, 2);
 });
 
 test("Renderer 协调器在语音结束时恢复最新回复情绪再释放动作", () => {
@@ -220,4 +296,36 @@ test("重复手动预览会从最近一次动作重新计算优先级窗口", ()
 
 function reactionInput(replyId: string, emotion: PetEmotion, replyText: string) {
   return { replyId, emotion, replyText, voiceActive: false, motion: "idle" as const };
+}
+
+class FakeScheduler {
+  now = 0;
+  private sequence = 0;
+  private tasks = new Map<number, { at: number; callback: () => void }>();
+
+  options() {
+    return {
+      thinkingDelayMs: 650,
+      schedule: (callback: () => void, delayMs: number) => {
+        const id = ++this.sequence;
+        this.tasks.set(id, { at: this.now + delayMs, callback });
+        return id;
+      },
+      cancelScheduled: (handle: unknown) => {
+        if (typeof handle === "number") this.tasks.delete(handle);
+      },
+    };
+  }
+
+  advance(milliseconds: number): void {
+    this.now += milliseconds;
+    while (true) {
+      const next = [...this.tasks.entries()]
+        .filter(([, task]) => task.at <= this.now)
+        .sort((left, right) => left[1].at - right[1].at || left[0] - right[0])[0];
+      if (!next) return;
+      this.tasks.delete(next[0]);
+      next[1].callback();
+    }
+  }
 }

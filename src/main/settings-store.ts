@@ -181,6 +181,16 @@ export function sanitizeSettings(input: SettingsInput): AgentSettings {
           ["ask", "allow", "deny"],
           DEFAULT_SETTINGS.computer.permissions["launch-app"],
         ),
+        "browser-control": enumValue(
+          computerPermissions["browser-control"],
+          ["ask", "deny"],
+          DEFAULT_SETTINGS.computer.permissions["browser-control"],
+        ),
+        "office-write": enumValue(
+          computerPermissions["office-write"],
+          ["ask", "deny"],
+          DEFAULT_SETTINGS.computer.permissions["office-write"],
+        ),
       },
     },
     window: {

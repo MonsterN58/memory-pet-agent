@@ -8,6 +8,9 @@ header small { color: #777187; }
 p { margin: 0 0 14px; color: #615b70; }
 label { display: grid; gap: 5px; margin: 10px 0; font-weight: 600; }
 input, textarea { box-sizing: border-box; width: 100%; border: 1px solid #d9d5e8; border-radius: 9px; padding: 8px 9px; color: inherit; background: white; font: inherit; resize: vertical; }
+.toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 13px; }
+.toggle-row input { width: 16px; height: 16px; margin: 0; accent-color: #7969e8; }
+.command-note { display: block; margin: -3px 0 10px 24px; color: #777187; }
 .actions { display: flex; gap: 8px; margin-top: 12px; }
 button { flex: 1; border: 0; border-radius: 9px; padding: 9px; background: #7969e8; color: white; font-weight: 700; cursor: pointer; }
 button.secondary { background: #ebe8f7; color: #4b4560; }

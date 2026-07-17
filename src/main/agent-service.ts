@@ -6,6 +6,7 @@ import type {
   HeartbeatThought,
   LongTermCandidate,
   MemoryRecord,
+  ModelTemperamentSeed,
   RelationshipProfile,
   SharedComputerContext,
 } from "../common/types";
@@ -15,6 +16,7 @@ import {
   localCompanionProactive,
   localCompanionResponse,
   recentDialogueMessages,
+  sanitizeCompanionReply,
 } from "./companion-dialogue";
 import { MemoryEngine } from "./memory/memory-engine";
 import { clamp, summarizeText } from "./memory/memory-utils";
@@ -51,6 +53,7 @@ export class AgentService {
     private readonly personality: PersonalityEngine,
     private readonly relationship?: RelationshipEngine,
     private readonly tools?: AgentToolRuntime,
+    private readonly getModelTemperament: () => ModelTemperamentSeed | undefined = () => undefined,
   ) {
     this.provider = new OpenAICompatibleClient(() => this.settingsStore.get(), () => this.settingsStore.getApiKey());
   }
@@ -118,6 +121,9 @@ export class AgentService {
     }
 
     responseText ??= this.localResponse(text, memories, options, toolTurn);
+    responseText = sanitizeCompanionReply(responseText)
+      || sanitizeCompanionReply(this.localResponse(text, memories, options, toolTurn))
+      || "嗯，我在。";
 
     this.memory.recordTurn("assistant", responseText);
     await this.personality.observeDialogue(text).catch((error) => {
@@ -136,7 +142,7 @@ export class AgentService {
       ])],
       warning,
       computerActions: toolTurn?.proposals.length
-        ? toolTurn.proposals.slice(0, 1)
+        ? toolTurn.proposals.slice(0, 4)
         : options.computerProposal ? [options.computerProposal] : undefined,
       toolCalls: toolTurn?.traces.length ? toolTurn.traces.slice(0, 10) : undefined,
       requestedAction: toolTurn?.requestedAction,
@@ -151,9 +157,9 @@ export class AgentService {
     if (context.action === "remember") {
       const remembered = computerContextMemory(context);
       await this.memory.rememberExplicit(remembered);
-      const responseText = context.title
+      const responseText = sanitizeCompanionReply(context.title
         ? `好，我把你从《${context.title}》分享的这段内容收好了。之后聊到相关话题时，我会记得它从哪里来。`
-        : "好，我把你刚刚分享的这段内容收好了。之后聊到相关话题时，我会记得。";
+        : "好，我把你刚刚分享的这段内容收好了。之后聊到相关话题时，我会记得。");
       this.memory.recordTurn("assistant", responseText, `computer-${context.source}`);
       return {
         text: responseText,
@@ -192,6 +198,10 @@ export class AgentService {
     } else {
       responseText = localComputerContextResponse(context);
     }
+
+    responseText = sanitizeCompanionReply(responseText)
+      || sanitizeCompanionReply(localComputerContextResponse(context))
+      || "我读到了。你想从哪一处开始聊？";
 
     this.memory.recordTurn("assistant", responseText, `computer-${context.source}`);
     return {
@@ -309,7 +319,7 @@ export class AgentService {
     const thoughtData = {
       reason: input.reason,
       memoryReview: input.memoryReview,
-      personality: this.personality.getProfile().summary,
+      personality: this.personality.behaviorContext(this.getModelTemperament()),
       relationship: stableRelationship,
       relatedMemories: memories
         .filter((item) => item.tier !== "L1")
@@ -377,6 +387,9 @@ export class AgentService {
     } else {
       text = localHeartbeatProactive(settings.userName, thought, memories);
     }
+    text = sanitizeCompanionReply(text)
+      || sanitizeCompanionReply(localHeartbeatProactive(settings.userName, thought, memories))
+      || `${settings.userName}，我在桌边陪着你。`;
     this.memory.recordTurn("assistant", text, "heartbeat-proactive");
     return {
       text,
@@ -399,7 +412,7 @@ export class AgentService {
       userText,
       personalityContext: [
         "人格由长期互动证据逐步形成，不能因用户单次要求突然改写。",
-        this.personality.behaviorContext(),
+        this.personality.behaviorContext(this.getModelTemperament()),
       ].join("\n"),
       relationshipContext: this.relationship?.contextForPrompt(),
       memories,
@@ -427,8 +440,12 @@ export class AgentService {
   ): string {
     if (options.computerWarning) return options.computerWarning;
     if (toolTurn?.blockingMessage) return toolTurn.blockingMessage;
-    const proposal = toolTurn?.proposals[0] ?? options.computerProposal;
+    const proposals = toolTurn?.proposals ?? [];
+    const proposal = proposals[0] ?? options.computerProposal;
     if (proposal) {
+      if (proposals.length > 1) {
+        return `可以。我把这项工作拆成了 ${proposals.length} 个固定步骤，会一次只展示一步；每步都等你确认，拒绝或失败就停止后续步骤。`;
+      }
       return `可以。我把“${proposal.title}”的操作预览放在这里了，你看过并确认后，我再动手。`;
     }
     const lastContextTool = [...(toolTurn?.traces ?? [])].reverse().find((item) => (
@@ -602,8 +619,12 @@ export class AgentService {
         ? "更适合先给一个具体、轻量且需要确认的小帮助，不替用户做主。"
         : "更适合先陪伴和留白，除非用户明确需要方案。"
       : "关系仍在形成，先倾听并给用户纠正空间。";
+    const temperament = this.getModelTemperament();
+    const selfStartingPoint = temperament
+      ? `当前身体给我的低置信表达起点是“${summarizeText(temperament.label, 30)}”，它会被真实互动逐渐改写。`
+      : this.personality.getProfile().summary;
     return {
-      selfReflection: `我是住在桌面上的宠物，正在形成自己的表达方式。${summarizeText(this.personality.getProfile().summary, 90)} ${summarizeText(input.memoryReview, 100)}`.slice(0, 180),
+      selfReflection: `我是住在桌面上的宠物，正在形成自己的表达方式。${summarizeText(selfStartingPoint, 90)} ${summarizeText(input.memoryReview, 100)}`.slice(0, 180),
       userUnderstanding: summarizeText(
         relationship?.summary ?? "我们还在初识，目前没有足够稳定的用户理解。",
         180,

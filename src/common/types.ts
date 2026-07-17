@@ -23,20 +23,28 @@ export interface PetMotionFrame {
   offsetX: number;
   offsetY: number;
 }
-export type PetAction =
-  | "wave"
-  | "nod"
-  | "shake-head"
-  | "head-tilt"
-  | "jump"
-  | "cheer"
-  | "dance"
-  | "sit"
-  | "stretch"
-  | "shy"
-  | "comfort"
-  | "sleep"
-  | "surprised";
+/** Stable semantic actions shared by main, preload, Renderer and model adapters. */
+export const PET_ACTIONS = [
+  "wave",
+  "nod",
+  "shake-head",
+  "head-tilt",
+  "jump",
+  "cheer",
+  "dance",
+  "sit",
+  "stretch",
+  "shy",
+  "comfort",
+  "sleep",
+  "surprised",
+  "bow",
+  "applaud",
+  "peek",
+  "ponder",
+  "present",
+] as const;
+export type PetAction = (typeof PET_ACTIONS)[number];
 export interface PetFocus {
   x: number;
   y: number;
@@ -46,7 +54,13 @@ export type ControlPanelView = "settings" | "memory";
 export type VoiceRecognitionMode = "local" | "browser";
 export type VoiceOutputMode = "local" | "cloud";
 export type ComputerPermissionPolicy = "ask" | "allow" | "deny";
-export type ComputerTool = "open-url" | "copy-text" | "save-text-file" | "launch-app";
+export type ComputerTool =
+  | "open-url"
+  | "copy-text"
+  | "save-text-file"
+  | "launch-app"
+  | "browser-control"
+  | "office-write";
 export type ComputerActionDecision = "allow-once" | "allow-session" | "allow-always" | "deny";
 export type ComputerActionStatus = "pending" | "completed" | "denied" | "cancelled" | "failed";
 export type ComputerContextAction = "explain" | "summarize" | "chat" | "remember";
@@ -61,10 +75,35 @@ export type AgentToolName =
   | "computer_copy_text"
   | "computer_save_text"
   | "computer_launch_app"
+  | "computer_browser_control"
+  | "computer_word_append"
+  | "computer_excel_write"
+  | "computer_powerpoint_add_slide"
+  | "computer_work_plan"
   | "pet_action";
 export type AgentToolStatus = "completed" | "approval-required" | "blocked" | "failed";
 export type PersonalityDimension = "warmth" | "curiosity" | "playfulness" | "directness" | "initiative" | "expressiveness";
 export type PersonalityStage = "blank" | "forming" | "developing" | "established";
+
+/**
+ * A model body's low-confidence starting temperament.
+ *
+ * This is presentation metadata, not learned personality evidence. Values are
+ * normalized to 0..1 and must never be persisted into PersonalityProfile.
+ */
+export interface ModelTemperamentSeed {
+  label: string;
+  summary: string;
+  warmth: number;
+  curiosity: number;
+  playfulness: number;
+  directness: number;
+  initiative: number;
+  expressiveness: number;
+}
+
+export type Live2DModelOrigin = "official-sample" | "third-party" | "user-import";
+
 export type RelationshipStage = "new" | "acquainted" | "familiar" | "companion";
 export type RelationshipInsightKind =
   | "identity"
@@ -388,6 +427,12 @@ export interface ComputerActionProposal {
   requiresApproval: boolean;
   allowedDecisions: ComputerActionDecision[];
   expiresAt: string;
+  plan?: {
+    id: string;
+    title: string;
+    step: number;
+    total: number;
+  };
 }
 
 export interface ComputerActionResult {
@@ -470,6 +515,8 @@ export interface Live2DModelInfo {
   id: string;
   name: string;
   source: "bundled" | "imported";
+  origin: Live2DModelOrigin;
+  temperamentSeed?: ModelTemperamentSeed;
   settingsVersion: number;
   motionGroups: Record<string, number>;
   motionCount: number;

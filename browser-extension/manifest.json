@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "把用户明确选择的网页内容交给本机记忆桌宠解释、总结、记住或继续聊天。",
   "permissions": ["activeTab", "contextMenus", "scripting", "storage"],
-  "host_permissions": ["http://127.0.0.1:32145/*"],
+  "host_permissions": ["http://127.0.0.1:32145/*", "http://localhost:32145/*"],
   "background": {
     "service_worker": "background.js"
   },

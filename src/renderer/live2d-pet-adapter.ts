@@ -2,6 +2,7 @@ import "pixi.js/unsafe-eval";
 import { Application, extensions, WebGLRenderer } from "pixi.js";
 import {
   configureCubismSDK,
+  cubismReady,
   CubismModelSettings,
   Live2DModel,
   Live2DPlugin,
@@ -11,11 +12,15 @@ import {
 import type { Live2DModelAssetPackage, PetAction, PetEmotion, PetFocus, PetMotionFrame } from "../common/types";
 import {
   advanceFocus,
+  computeProceduralActionPose,
+  computeThinkingPose,
   computePetTransform,
   motionDurationMs,
   proceduralActionDurationMs,
-  resolveFocusBindings,
   resolveActionMotion,
+  resolveEmotionExpression,
+  resolveFocusBindings,
+  resolveLipSyncParameters,
   type FocusBindings,
   type PetTransform,
 } from "./live2d-interaction";
@@ -55,20 +60,6 @@ function createModelSettings(assets: Live2DModelAssetPackage): CubismModelSettin
   return settings;
 }
 
-const MAO_EXPRESSIONS: Record<PetEmotion, number> = {
-  idle: 0,
-  happy: 1,
-  excited: 1,
-  thinking: 4,
-  curious: 3,
-  listening: 6,
-  speaking: 0,
-  comforting: 5,
-  shy: 7,
-  surprised: 6,
-  sleepy: 2,
-};
-
 interface FocusProfile {
   eye: number;
   headX: number;
@@ -91,6 +82,12 @@ const BUNDLED_FOCUS_PROFILES: Record<string, FocusProfile> = {
   hiyori: { eye: 0.9, headX: 10, headY: 7, headZ: 2.5, body: 3, ear: 0 },
   mao: { eye: 0.82, headX: 9, headY: 6, headZ: 2, body: 2.5, ear: 0 },
   wanko: { eye: 0, headX: 18, headY: 12, headZ: 4, body: 6, ear: 0.4 },
+  haru: { eye: 0.9, headX: 10, headY: 7, headZ: 2.5, body: 3, ear: 0 },
+  mark: { eye: 0.88, headX: 11, headY: 8, headZ: 2.8, body: 3.2, ear: 0 },
+  nana: { eye: 0.88, headX: 11, headY: 8, headZ: 2.8, body: 3.2, ear: 0 },
+  rice: { eye: 0.92, headX: 11, headY: 8, headZ: 3, body: 4, ear: 0 },
+  cyannyan: { eye: 0.9, headX: 11, headY: 8, headZ: 3, body: 3.2, ear: 0 },
+  xiaoyun: { eye: 0.9, headX: 11, headY: 8, headZ: 3, body: 3.4, ear: 0 },
 };
 
 const TRANSFORM_KEYS: Array<keyof PetTransform> = [
@@ -116,6 +113,9 @@ export class Live2DPetAdapter implements PetModelAdapter {
   private height = 330;
   private baseScale = 1;
   private emotion: PetEmotion = "idle";
+  private thinking = false;
+  private thinkingBlend = 0;
+  private thinkingStartedAt = 0;
   private motion: PetMotionFrame = {
     state: "idle", velocityX: 0, velocityY: 0, offsetX: 0, offsetY: 0,
   };
@@ -128,6 +128,7 @@ export class Live2DPetAdapter implements PetModelAdapter {
   private focus: PetFocus = { x: 0, y: 0 };
   private appliedFocus: PetFocus = { x: 0, y: 0 };
   private focusBindings: FocusBindings = {};
+  private lipSyncParameters: string[] = [];
   private landingStartedAt?: number;
   private spring = neutralTransform();
   private springVelocity = zeroTransform();
@@ -140,6 +141,11 @@ export class Live2DPetAdapter implements PetModelAdapter {
 
   async mount(container: HTMLElement): Promise<void> {
     configureRuntime();
+    // CubismModelSettings immediately asks the Framework for its shared JSON
+    // null/error values.  Minimal model3 files can omit Groups, motions and
+    // other optional nodes, so the Framework must be initialized before the
+    // settings object is constructed (not merely before the moc is loaded).
+    await cubismReady();
     const root = document.createElement("div");
     root.className = "live2d-pet state-idle locomotion-idle";
     root.dataset.model = this.assets.info.id;
@@ -183,11 +189,14 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.installTextureUploadCompatibility(model);
     app.stage.addChild(model);
     this.model = model;
-    this.focusBindings = this.discoverFocusBindings(model);
+    const parameterIds = this.discoverParameterIds(model);
+    this.focusBindings = resolveFocusBindings(parameterIds);
+    this.lipSyncParameters = resolveLipSyncParameters(parameterIds, this.assets.info.lipSyncParameters);
     model.on("beforeModelUpdate", () => this.applyFrameParameters());
     this.fitModel();
     this.setFocus(this.focus);
     this.playIdle();
+    this.applyEmotionExpression();
   }
 
   setState(state: PetEmotion): void {
@@ -196,6 +205,13 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.emotion = state;
     this.root?.classList.add(`state-${state}`);
     this.applyEmotionExpression();
+  }
+
+  setThinking(active: boolean): void {
+    if (active === this.thinking) return;
+    this.thinking = active;
+    if (active) this.thinkingStartedAt = performance.now();
+    this.root?.classList.toggle("is-thinking", active);
   }
 
   setMotion(frame: PetMotionFrame): void {
@@ -284,10 +300,14 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.app?.destroy({ removeView: true }, { children: true, texture: false, textureSource: false, context: true });
     this.app = undefined;
     this.focusBindings = {};
+    this.lipSyncParameters = [];
     this.appliedFocus = { x: 0, y: 0 };
     this.action = undefined;
     this.actionUsesMotion = false;
     this.actionStartedAt = 0;
+    this.thinking = false;
+    this.thinkingBlend = 0;
+    this.thinkingStartedAt = 0;
     this.landingStartedAt = undefined;
     this.spring = neutralTransform();
     this.springVelocity = zeroTransform();
@@ -324,8 +344,12 @@ export class Live2DPetAdapter implements PetModelAdapter {
   }
 
   private applyEmotionExpression(): void {
-    const expression = MAO_EXPRESSIONS[this.emotion];
-    if (this.assets.info.id === "mao" && this.assets.info.expressionCount > expression) {
+    const expression = resolveEmotionExpression(
+      this.assets.info.id,
+      this.emotion,
+      this.assets.info.expressionCount,
+    );
+    if (expression !== undefined) {
       void this.model?.expression(expression).catch(() => false);
     }
   }
@@ -394,16 +418,22 @@ export class Live2DPetAdapter implements PetModelAdapter {
   private applySpringTransform(): void {
     const model = this.model;
     if (!model) return;
+    const now = performance.now();
+    const poseWeight = !this.action && this.motion.state === "idle" ? this.thinkingBlend : 0;
+    const thinkingPose = computeThinkingPose(now - this.thinkingStartedAt, poseWeight);
+    const speakingPulse = this.lipSyncParameters.length === 0 && now < this.speechUntil
+      ? Math.abs(Math.sin(now / 105))
+      : 0;
     const facing = this.motion.state === "walk-left" ? -1 : 1;
     model.scale.set(
-      this.baseScale * facing * this.spring.scaleX,
-      this.baseScale * this.spring.scaleY,
+      this.baseScale * facing * this.spring.scaleX * (1 + speakingPulse * 0.003),
+      this.baseScale * this.spring.scaleY * (1 + speakingPulse * 0.006),
     );
     model.position.set(
-      this.width / 2 + this.spring.translateX,
-      this.height - 2 + this.spring.translateY,
+      this.width / 2 + this.spring.translateX + thinkingPose.translateX,
+      this.height - 2 + this.spring.translateY + thinkingPose.translateY - speakingPulse * 1.2,
     );
-    model.rotation = this.spring.rotation;
+    model.rotation = this.spring.rotation + thinkingPose.rotation;
   }
 
   private applyLipSync(): void {
@@ -412,7 +442,7 @@ export class Live2DPetAdapter implements PetModelAdapter {
       getIdSafe(id: string): unknown;
       coreModel: { addParameterValueById(id: unknown, value: number, weight?: number): void };
     };
-    const parameters = this.assets.info.lipSyncParameters;
+    const parameters = this.lipSyncParameters;
     if (!parameters.length) return;
     const value = 0.12 + Math.abs(Math.sin(performance.now() / 92)) * 0.72;
     for (const parameter of parameters) {
@@ -420,20 +450,25 @@ export class Live2DPetAdapter implements PetModelAdapter {
     }
   }
 
-  private discoverFocusBindings(model: Live2DModel<CubismInternalModel>): FocusBindings {
+  private discoverParameterIds(model: Live2DModel<CubismInternalModel>): string[] {
     const core = model.internalModel.coreModel;
     const parameterIds: string[] = [];
     for (let index = 0; index < core.getParameterCount(); index += 1) {
       parameterIds.push(core.getParameterId(index).getString().s);
     }
-    return resolveFocusBindings(parameterIds);
+    return parameterIds;
   }
 
   private applyFrameParameters(): void {
+    const now = performance.now();
+    const target = this.thinking ? 1 : 0;
+    const damping = target > this.thinkingBlend ? 0.075 : 0.14;
+    this.thinkingBlend += (target - this.thinkingBlend) * damping;
+    if (!this.thinking && this.thinkingBlend < 0.001) this.thinkingBlend = 0;
     this.appliedFocus = advanceFocus(this.appliedFocus, this.focus, 0.16);
-    this.applyFocusParameters();
+    this.applyFocusParameters(now);
     this.applyLipSync();
-    this.updateTransform(performance.now());
+    this.updateTransform(now);
   }
 
   private readMotionDuration(group: string, index: number): number | undefined {
@@ -459,7 +494,7 @@ export class Live2DPetAdapter implements PetModelAdapter {
     }
   }
 
-  private applyFocusParameters(): void {
+  private applyFocusParameters(now: number): void {
     const { x, y } = this.appliedFocus;
     const bindings = this.focusBindings;
     const profile = BUNDLED_FOCUS_PROFILES[this.assets.info.id] ?? DEFAULT_FOCUS_PROFILE;
@@ -477,6 +512,32 @@ export class Live2DPetAdapter implements PetModelAdapter {
     this.addBoundedParameter(bindings.bodyZ, -x * profile.body * 0.45 * bodyMultiplier);
     this.addBoundedParameter(bindings.earLeft, (x + y * 0.2) * profile.ear);
     this.addBoundedParameter(bindings.earRight, (-x + y * 0.2) * profile.ear);
+
+    const poseWeight = !this.action && this.motion.state === "idle" ? this.thinkingBlend : 0;
+    const pose = computeThinkingPose(now - this.thinkingStartedAt, poseWeight);
+    this.addBoundedParameter(bindings.eyeX, pose.eyeX);
+    this.addBoundedParameter(bindings.eyeY, pose.eyeY);
+    this.addBoundedParameter(bindings.angleX, pose.headX);
+    this.addBoundedParameter(bindings.angleY, pose.headY);
+    this.addBoundedParameter(bindings.angleZ, pose.headZ);
+    this.addBoundedParameter(bindings.bodyX, pose.bodyX);
+    this.addBoundedParameter(bindings.bodyY, pose.bodyY);
+    this.addBoundedParameter(bindings.earLeft, pose.earLeft);
+    this.addBoundedParameter(bindings.earRight, pose.earRight);
+
+    if (this.action && !this.actionUsesMotion && this.motion.state === "idle") {
+      const actionPose = computeProceduralActionPose(this.action, now - this.actionStartedAt);
+      this.addBoundedParameter(bindings.eyeX, actionPose.eyeX);
+      this.addBoundedParameter(bindings.eyeY, actionPose.eyeY);
+      this.addBoundedParameter(bindings.angleX, actionPose.headX);
+      this.addBoundedParameter(bindings.angleY, actionPose.headY);
+      this.addBoundedParameter(bindings.angleZ, actionPose.headZ);
+      this.addBoundedParameter(bindings.bodyX, actionPose.bodyX);
+      this.addBoundedParameter(bindings.bodyY, actionPose.bodyY);
+      this.addBoundedParameter(bindings.bodyZ, actionPose.bodyZ);
+      this.addBoundedParameter(bindings.earLeft, actionPose.earLeft);
+      this.addBoundedParameter(bindings.earRight, actionPose.earRight);
+    }
   }
 
   private addBoundedParameter(index: number | undefined, value: number): void {
